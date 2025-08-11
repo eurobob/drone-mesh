@@ -289,6 +289,10 @@ class MeshExplorer {
     
     console.log('Mesh size:', size);
     
+    // Fix mesh orientation - rotate 90 degrees around X-axis
+    mesh.rotation.x = -Math.PI / 2;
+    logTiming('Mesh rotation fix');
+    
     const maxDim = Math.max(size.x, size.y, size.z);
     const scale = 50 / maxDim;
     mesh.scale.multiplyScalar(scale);
