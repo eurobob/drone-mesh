@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { FirstPersonControls } from './FirstPersonControls.js';
 import { MeshLoader } from './MeshLoader.js';
 
+// Configuration toggle
+const ENABLE_SURFACE_SELECTION = false;  // Set to true to enable surface selection
+
 class MeshExplorer {
   constructor() {
     this.scene = null;
@@ -117,6 +120,9 @@ class MeshExplorer {
   }
 
   setupSurfaceSelection() {
+    // Skip if surface selection is disabled
+    if (!ENABLE_SURFACE_SELECTION) return;
+    
     const canvas = this.renderer.domElement;
     
     // Handle mouse clicks for desktop
