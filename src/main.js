@@ -599,6 +599,8 @@ class MeshExplorer {
       if (child instanceof THREE.Mesh) {
         meshCount++;
         child.frustumCulled = true;
+        child.castShadow = false;
+        child.receiveShadow = false;
         
         if (child.material) {
           materialCount++;
@@ -633,23 +635,143 @@ class MeshExplorer {
   async swapToHighRes() {
     console.log('Swapping to high-res mesh...');
     
-    // Store camera position
-    const cameraPos = this.camera.position.clone();
-    const cameraTarget = this.controls.lat;
-    const cameraRotation = this.controls.lon;
+    // Check if high-res has many children or single mesh
+    const meshes = [];
+    this.highResMesh.traverse(child => {
+      if (child.isMesh) meshes.push(child);
+    });
     
-    // Setup high-res mesh
-    await this.setupMesh(this.highResMesh);
+    console.log(`High-res mesh has ${meshes.length} child meshes`);
     
-    // Restore camera position
-    this.camera.position.copy(cameraPos);
-    this.controls.lat = cameraTarget;
-    this.controls.lon = cameraRotation;
+    if (meshes.length > 5) {
+      // Multiple meshes - add gradually
+      await this.addSceneGradually(this.highResMesh);
+    } else {
+      // Few meshes - use normal setup but without camera reset
+      await this.setupMeshWithoutCamera(this.highResMesh);
+    }
     
     this.hideProgressiveLoader();
     this.isLoadingHighRes = false;
     
     console.log('Successfully swapped to high-res mesh');
+  }
+
+  addSceneGradually(obj3d, batchSize = 2) {
+    return new Promise(resolve => {
+      const meshes = [];
+      obj3d.traverse(child => {
+        if (child.isMesh) {
+          child.castShadow = false;
+          child.receiveShadow = false;
+          child.frustumCulled = true;
+          if (child.material) child.material.precision = 'mediump';
+          meshes.push(child);
+        }
+      });
+      
+      // Apply transformations to the group
+      const group = new THREE.Group();
+      group.rotation.order = 'YXZ';
+      group.rotation.y = Math.PI;
+      group.rotation.x = -Math.PI / 2;
+      
+      const box = new THREE.Box3().setFromObject(obj3d);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const scale = 50 / maxDim;
+      group.scale.multiplyScalar(scale);
+      group.position.sub(center.multiplyScalar(scale));
+      group.position.y = 0;
+      
+      // Add high-res group to scene ALONGSIDE low-res (don't remove low-res yet)
+      this.scene.add(group);
+      
+      let i = 0;
+      let frameCount = 0;
+      let lastCameraPos = this.camera.position.clone();
+      let lastCameraRot = { lat: this.controls.lat, lon: this.controls.lon };
+      
+      const step = () => {
+        // Check if camera is moving
+        const cameraMoving = 
+          this.camera.position.distanceTo(lastCameraPos) > 0.01 ||
+          Math.abs(this.controls.lat - lastCameraRot.lat) > 0.5 ||
+          Math.abs(this.controls.lon - lastCameraRot.lon) > 0.5 ||
+          this.controls.moveForward || this.controls.moveBackward || 
+          this.controls.moveLeft || this.controls.moveRight;
+        
+        // Update last positions
+        lastCameraPos.copy(this.camera.position);
+        lastCameraRot.lat = this.controls.lat;
+        lastCameraRot.lon = this.controls.lon;
+        
+        // Only load when camera is NOT moving
+        if (!cameraMoving) {
+          // Load in batches when idle
+          if (frameCount % 2 === 0) {
+            const end = Math.min(i + 3, meshes.length);
+            for (; i < end; i++) {
+              group.add(meshes[i]);
+            }
+          }
+        }
+        
+        frameCount++;
+        
+        if (i < meshes.length) {
+          requestAnimationFrame(step);
+        } else {
+          // Only remove low-res after ALL chunks are loaded
+          if (this.currentMesh) {
+            this.scene.remove(this.currentMesh);
+          }
+          this.currentMesh = group;
+          resolve();
+        }
+      };
+      
+      requestAnimationFrame(step);
+    });
+  }
+
+  async setupMeshWithoutCamera(mesh) {
+    // Same as setupMesh but without camera positioning
+    if (this.currentMesh) {
+      this.scene.remove(this.currentMesh);
+    }
+    
+    const box = new THREE.Box3().setFromObject(mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    
+    mesh.rotation.order = 'YXZ';
+    mesh.rotation.y = Math.PI;
+    mesh.rotation.x = -Math.PI / 2;
+    
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const scale = 50 / maxDim;
+    mesh.scale.multiplyScalar(scale);
+    
+    mesh.position.sub(center.multiplyScalar(scale));
+    mesh.position.y = 0;
+    
+    // Optimize materials
+    mesh.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.frustumCulled = true;
+        child.castShadow = false;
+        child.receiveShadow = false;
+        if (child.material) child.material.precision = 'mediump';
+      }
+    });
+    
+    this.scene.add(mesh);
+    this.currentMesh = mesh;
+    
+    return mesh;
   }
 
   animate() {
