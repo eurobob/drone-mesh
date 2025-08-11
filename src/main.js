@@ -106,13 +106,6 @@ class MeshExplorer {
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    const fileInput = document.getElementById('file-input');
-    fileInput.addEventListener('change', (event) => {
-      const files = event.target.files;
-      if (files.length > 0) {
-        this.loadMeshFiles(files);
-      }
-    });
   }
 
   showLoading(text = 'Loading mesh...') {
