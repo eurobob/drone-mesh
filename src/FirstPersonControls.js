@@ -29,7 +29,7 @@ export class FirstPersonControls {
   }
   
   init() {
-    this.isMouseDown = true; // Always active
+    this.isMouseDown = false; // Click and hold to look
     
     document.addEventListener('keydown', (e) => this.onKeyDown(e));
     document.addEventListener('keyup', (e) => this.onKeyUp(e));
@@ -81,16 +81,18 @@ export class FirstPersonControls {
   }
   
   onMouseMove(event) {
-    const deltaX = event.clientX - this.mouseX;
-    const deltaY = event.clientY - this.mouseY;
-    
-    this.lon += deltaX * this.lookSpeed * 50; // Fixed: changed from -= to +=
-    this.lat -= deltaY * this.lookSpeed * 50;
-    
-    this.lat = Math.max(-85, Math.min(85, this.lat));
-    
-    this.mouseX = event.clientX;
-    this.mouseY = event.clientY;
+    if (this.isMouseDown) {
+      const deltaX = event.clientX - this.mouseX;
+      const deltaY = event.clientY - this.mouseY;
+      
+      this.lon += deltaX * this.lookSpeed * 50;
+      this.lat -= deltaY * this.lookSpeed * 50;
+      
+      this.lat = Math.max(-85, Math.min(85, this.lat));
+      
+      this.mouseX = event.clientX;
+      this.mouseY = event.clientY;
+    }
   }
   
   onMouseDown(event) {

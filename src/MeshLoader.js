@@ -1,19 +1,80 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
 export class MeshLoader {
   constructor(scene) {
     this.scene = scene;
+    
+    // Setup DRACO loader for compressed geometry
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+    
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+    
     this.loaders = {
       obj: new OBJLoader(),
-      gltf: new GLTFLoader(),
-      glb: new GLTFLoader(),
+      mtl: new MTLLoader(),
+      gltf: gltfLoader,
+      glb: gltfLoader,
       ply: new PLYLoader(),
       stl: new STLLoader()
     };
+  }
+
+  async loadFiles(files) {
+    // Sort files by type
+    const objFile = files.find(f => f.name.endsWith('.obj'));
+    const mtlFile = files.find(f => f.name.endsWith('.mtl'));
+    const textureFiles = files.filter(f => 
+      f.name.endsWith('.png') || 
+      f.name.endsWith('.jpg') || 
+      f.name.endsWith('.jpeg')
+    );
+
+    if (objFile) {
+      // Create URLs for all files
+      const objUrl = URL.createObjectURL(objFile);
+      const textureUrls = {};
+      
+      textureFiles.forEach(file => {
+        textureUrls[file.name] = URL.createObjectURL(file);
+      });
+
+      try {
+        let mesh;
+        
+        if (mtlFile) {
+          // Load with MTL
+          const mtlUrl = URL.createObjectURL(mtlFile);
+          mesh = await this.loadOBJWithMTL(objUrl, mtlUrl, textureUrls);
+          URL.revokeObjectURL(mtlUrl);
+        } else {
+          // Load OBJ only
+          mesh = await this.loadOBJ(objUrl);
+        }
+
+        // Clean up URLs
+        URL.revokeObjectURL(objUrl);
+        Object.values(textureUrls).forEach(url => URL.revokeObjectURL(url));
+        
+        return mesh;
+      } catch (error) {
+        // Clean up URLs on error
+        URL.revokeObjectURL(objUrl);
+        Object.values(textureUrls).forEach(url => URL.revokeObjectURL(url));
+        throw error;
+      }
+    } else if (files.length === 1) {
+      return this.loadFile(files[0]);
+    } else {
+      throw new Error('Please select an OBJ file with its associated files');
+    }
   }
 
   async loadFile(file) {
@@ -49,6 +110,55 @@ export class MeshLoader {
     }
   }
 
+  loadOBJWithMTL(objUrl, mtlUrl, textureUrls) {
+    return new Promise((resolve, reject) => {
+      this.loaders.mtl.load(
+        mtlUrl,
+        (materials) => {
+          materials.preload();
+          
+          // Replace texture URLs with our blob URLs
+          Object.keys(materials.materials).forEach(matKey => {
+            const material = materials.materials[matKey];
+            if (material.map && material.map.image) {
+              const textureName = material.map.image.src.split('/').pop();
+              if (textureUrls[textureName]) {
+                const textureLoader = new THREE.TextureLoader();
+                material.map = textureLoader.load(textureUrls[textureName]);
+              }
+            }
+          });
+          
+          this.loaders.obj.setMaterials(materials);
+          this.loaders.obj.load(
+            objUrl,
+            (object) => {
+              object.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                  child.castShadow = true;
+                  child.receiveShadow = true;
+                  if (child.material) {
+                    child.material.side = THREE.DoubleSide;
+                  }
+                }
+              });
+              this.scene.add(object);
+              resolve(object);
+            },
+            (progress) => {
+              console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
+            },
+            (error) => reject(error)
+          );
+        },
+        (progress) => {
+          console.log('Loading MTL:', (progress.loaded / progress.total * 100) + '%');
+        },
+        (error) => reject(error)
+      );
+    });
+  }
+
   loadOBJ(url) {
     return new Promise((resolve, reject) => {
       this.loaders.obj.load(
@@ -77,9 +187,11 @@ export class MeshLoader {
 
   loadGLTF(url) {
     return new Promise((resolve, reject) => {
+      console.log('Starting GLTF load from URL:', url);
       this.loaders.gltf.load(
         url,
         (gltf) => {
+          console.log('GLTF loaded successfully:', gltf);
           const object = gltf.scene;
           object.traverse((child) => {
             if (child instanceof THREE.Mesh) {
@@ -90,6 +202,9 @@ export class MeshLoader {
                   color: 0x888888,
                   side: THREE.DoubleSide
                 });
+              } else if (child.material) {
+                // Ensure double-sided rendering for ODM models
+                child.material.side = THREE.DoubleSide;
               }
             }
           });
@@ -97,9 +212,14 @@ export class MeshLoader {
           resolve(object);
         },
         (progress) => {
-          console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
+          if (progress.total > 0) {
+            console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
+          }
         },
-        (error) => reject(error)
+        (error) => {
+          console.error('GLTF loading error:', error);
+          reject(error);
+        }
       );
     });
   }

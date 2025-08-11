@@ -73,24 +73,74 @@ class MeshExplorer {
 
     const fileInput = document.getElementById('file-input');
     fileInput.addEventListener('change', (event) => {
-      const file = event.target.files[0];
-      if (file) {
-        this.loadMeshFile(file);
+      const files = event.target.files;
+      if (files.length > 0) {
+        this.loadMeshFiles(files);
       }
     });
   }
 
-  async loadMeshFile(file) {
+  showLoading(text = 'Loading mesh...') {
+    const overlay = document.getElementById('loading-overlay');
+    const loadingText = document.getElementById('loading-text');
+    const progressText = document.getElementById('loading-progress');
+    
+    overlay.classList.add('active');
+    loadingText.textContent = text;
+    progressText.textContent = '';
+  }
+  
+  hideLoading() {
+    const overlay = document.getElementById('loading-overlay');
+    overlay.classList.remove('active');
+  }
+  
+  updateLoadingProgress(progress) {
+    const progressText = document.getElementById('loading-progress');
+    if (progress && progress.total > 0) {
+      const percent = Math.round((progress.loaded / progress.total) * 100);
+      progressText.textContent = `${percent}%`;
+    }
+  }
+
+  async loadMeshFiles(files) {
     try {
+      this.showLoading('Loading mesh file...');
+      
       if (this.currentMesh) {
         this.scene.remove(this.currentMesh);
       }
       
-      this.currentMesh = await this.meshLoader.loadFile(file);
+      // Check if it's a single GLB/GLTF file
+      const filesArray = Array.from(files);
+      console.log('Loading files:', filesArray.map(f => f.name));
+      
+      const glbFile = filesArray.find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
+      
+      // Use setTimeout to allow UI to update before heavy processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      if (glbFile) {
+        console.log('Loading GLB file:', glbFile.name);
+        this.currentMesh = await this.meshLoader.loadFile(glbFile, (progress) => {
+          this.updateLoadingProgress(progress);
+        });
+      } else {
+        // Handle multiple files (OBJ + MTL + textures)
+        console.log('Loading multiple files');
+        this.currentMesh = await this.meshLoader.loadFiles(filesArray);
+      }
+      
+      console.log('Mesh loaded successfully:', this.currentMesh);
+      
+      this.showLoading('Processing geometry...');
+      await new Promise(resolve => setTimeout(resolve, 10));
       
       const box = new THREE.Box3().setFromObject(this.currentMesh);
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
+      
+      console.log('Mesh size:', size);
       
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 50 / maxDim;
@@ -99,12 +149,29 @@ class MeshExplorer {
       this.currentMesh.position.sub(center.multiplyScalar(scale));
       this.currentMesh.position.y = 0;
       
+      // Optimize materials for large meshes
+      this.currentMesh.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          // Enable frustum culling
+          child.frustumCulled = true;
+          
+          // Optimize material settings
+          if (child.material) {
+            child.material.precision = 'mediump';
+          }
+        }
+      });
+      
       this.camera.position.set(0, size.y * scale * 0.5, size.z * scale * 1.5);
       this.controls.reset();
       
+      this.hideLoading();
+      
     } catch (error) {
-      console.error('Error loading mesh:', error);
-      alert('Failed to load mesh file. Please try a different format.');
+      this.hideLoading();
+      console.error('Detailed error loading mesh:', error);
+      console.error('Error stack:', error.stack);
+      alert(`Failed to load mesh file: ${error.message}`);
     }
   }
 
