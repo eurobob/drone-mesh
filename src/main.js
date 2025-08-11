@@ -68,8 +68,33 @@ class MeshExplorer {
     const gridHelper = new THREE.GridHelper(200, 50, 0x444444, 0x888888);
     this.scene.add(gridHelper);
 
-    const axesHelper = new THREE.AxesHelper(5);
-    this.scene.add(axesHelper);
+    // Create thick custom axes with cylinders
+    const axesGroup = new THREE.Group();
+    
+    // X-axis (red)
+    const xGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
+    const xMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+    const xAxis = new THREE.Mesh(xGeometry, xMaterial);
+    xAxis.rotation.z = -Math.PI / 2;
+    xAxis.position.x = 2.5;
+    axesGroup.add(xAxis);
+    
+    // Y-axis (green)
+    const yGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
+    const yMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+    const yAxis = new THREE.Mesh(yGeometry, yMaterial);
+    yAxis.position.y = 2.5;
+    axesGroup.add(yAxis);
+    
+    // Z-axis (blue)
+    const zGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
+    const zMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+    const zAxis = new THREE.Mesh(zGeometry, zMaterial);
+    zAxis.rotation.x = Math.PI / 2;
+    zAxis.position.z = 2.5;
+    axesGroup.add(zAxis);
+    
+    // this.scene.add(axesGroup); // Hidden for now
 
     this.meshLoader = new MeshLoader(this.scene);
   }
@@ -289,8 +314,10 @@ class MeshExplorer {
     
     console.log('Mesh size:', size);
     
-    // Fix mesh orientation - rotate 90 degrees around X-axis
-    mesh.rotation.x = -Math.PI / 2;
+    // Fix mesh orientation - rotate in world coordinates
+    mesh.rotation.order = 'YXZ'; // Apply Y rotation first, then X
+    mesh.rotation.y = Math.PI; // 180 degrees around world Y-axis first
+    mesh.rotation.x = -Math.PI / 2; // Then 90 degrees around X-axis
     logTiming('Mesh rotation fix');
     
     const maxDim = Math.max(size.x, size.y, size.z);
@@ -318,11 +345,12 @@ class MeshExplorer {
     console.log(`Processed ${meshCount} meshes with ${materialCount} materials`);
     logTiming('Material optimization');
     
-    // Set camera position only for first mesh - moved back and looking down slightly
+    // Set camera position only for first mesh - up and back from origin
     if (!this.currentMesh) {
-      this.camera.position.set(0, size.y * scale * 0.5, size.z * scale * 2.5);  // Further back
-      this.controls.lat = -15; // Look down slightly
+      this.camera.position.set(0, 10, 15);  // Up and back from origin
       this.controls.reset();
+      this.controls.lat = -15; // Look down slightly
+      this.controls.lon = -90; // Rotate to look along Z-axis
     }
     logTiming('Camera setup');
     
