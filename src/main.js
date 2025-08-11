@@ -190,24 +190,37 @@ class MeshExplorer {
 
   highlightSurface(mesh, face) {
     console.log('Highlighting surface with face:', face);
+    console.log('Intersection data:', this.selectedSurface.intersection);
     
-    // Create a simple sphere at the intersection point for now
-    const sphereGeometry = new THREE.SphereGeometry(0.5, 16, 16);
-    const sphereMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xff6b35, 
-      transparent: true, 
-      opacity: 0.8 
+    const intersection = this.selectedSurface.intersection;
+    
+    // Create a plane at the intersection point oriented along the face normal
+    const planeGeometry = new THREE.PlaneGeometry(2, 2); // 2x2 square
+    const planeMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff6b35,
+      transparent: true,
+      opacity: 0.7,
+      side: THREE.DoubleSide
     });
     
-    this.highlightMesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    this.highlightMesh = new THREE.Mesh(planeGeometry, planeMaterial);
     
     // Position at intersection point
-    if (this.selectedSurface && this.selectedSurface.intersection) {
-      this.highlightMesh.position.copy(this.selectedSurface.intersection.point);
-    }
+    this.highlightMesh.position.copy(intersection.point);
+    
+    // Orient the plane to face the same direction as the surface
+    this.highlightMesh.lookAt(
+      intersection.point.x + intersection.face.normal.x,
+      intersection.point.y + intersection.face.normal.y,
+      intersection.point.z + intersection.face.normal.z
+    );
+    
+    // Offset slightly along normal to avoid z-fighting
+    const offset = intersection.face.normal.clone().multiplyScalar(0.01);
+    this.highlightMesh.position.add(offset);
     
     this.scene.add(this.highlightMesh);
-    console.log('Added highlight sphere at:', this.highlightMesh.position);
+    console.log('Added highlight plane at:', this.highlightMesh.position);
   }
 
   clearSurfaceSelection() {
