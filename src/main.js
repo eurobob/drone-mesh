@@ -194,12 +194,12 @@ class MeshExplorer {
     
     const intersection = this.selectedSurface.intersection;
     
-    // Create a plane at the intersection point oriented along the face normal
-    const planeGeometry = new THREE.PlaneGeometry(2, 2); // 2x2 square
+    // Create a much smaller plane
+    const planeGeometry = new THREE.PlaneGeometry(0.5, 0.5); // Much smaller
     const planeMaterial = new THREE.MeshBasicMaterial({
       color: 0xff6b35,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.8,
       side: THREE.DoubleSide
     });
     
@@ -208,15 +208,18 @@ class MeshExplorer {
     // Position at intersection point
     this.highlightMesh.position.copy(intersection.point);
     
-    // Orient the plane to face the same direction as the surface
-    this.highlightMesh.lookAt(
-      intersection.point.x + intersection.face.normal.x,
-      intersection.point.y + intersection.face.normal.y,
-      intersection.point.z + intersection.face.normal.z
-    );
+    // Get world-space normal
+    const worldNormal = intersection.face.normal.clone();
+    worldNormal.transformDirection(mesh.matrixWorld);
+    worldNormal.normalize();
+    
+    // Create a quaternion to align the plane with the surface normal
+    const quaternion = new THREE.Quaternion();
+    quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), worldNormal);
+    this.highlightMesh.setRotationFromQuaternion(quaternion);
     
     // Offset slightly along normal to avoid z-fighting
-    const offset = intersection.face.normal.clone().multiplyScalar(0.01);
+    const offset = worldNormal.clone().multiplyScalar(0.02);
     this.highlightMesh.position.add(offset);
     
     this.scene.add(this.highlightMesh);
