@@ -643,13 +643,8 @@ class MeshExplorer {
     
     console.log(`High-res mesh has ${meshes.length} child meshes`);
     
-    if (meshes.length > 5) {
-      // Multiple meshes - add gradually
-      await this.addSceneGradually(this.highResMesh);
-    } else {
-      // Few meshes - use normal setup but without camera reset
-      await this.setupMeshWithoutCamera(this.highResMesh);
-    }
+    // Use gradual loading for the 130 meshes
+    await this.addSceneGradually(this.highResMesh);
     
     this.hideProgressiveLoader();
     this.isLoadingHighRes = false;
