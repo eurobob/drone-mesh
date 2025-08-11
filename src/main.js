@@ -19,7 +19,7 @@ class MeshExplorer {
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
     this.selectedSurface = null;
-    this.originalMaterials = new Map();
+    this.highlightMesh = null;
     
     this.init();
     this.setupEventListeners();
@@ -175,14 +175,13 @@ class MeshExplorer {
     const mesh = intersection.object;
     const face = intersection.face;
     
-    // Store original material
-    if (!this.originalMaterials.has(mesh)) {
-      this.originalMaterials.set(mesh, mesh.material.clone());
-    }
+    console.log('Selecting surface:', { mesh, face, intersection });
 
-    // Highlight the surface
-    this.highlightSurface(mesh, face);
+    // Set selected surface first
     this.selectedSurface = { mesh, face, intersection };
+    
+    // Then highlight the surface
+    this.highlightSurface(mesh, face);
     
     // Classify surface type
     const surfaceType = this.classifySurface(face, intersection);
@@ -190,27 +189,35 @@ class MeshExplorer {
   }
 
   highlightSurface(mesh, face) {
-    // Create highlighted material
-    const highlightMaterial = mesh.material.clone();
-    highlightMaterial.color.setHex(0xff6b35); // Orange highlight
+    console.log('Highlighting surface with face:', face);
     
-    // Only set emissive if the material supports it
-    if (highlightMaterial.emissive) {
-      highlightMaterial.emissive.setHex(0x442211);
+    // Create a simple sphere at the intersection point for now
+    const sphereGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+    const sphereMaterial = new THREE.MeshBasicMaterial({ 
+      color: 0xff6b35, 
+      transparent: true, 
+      opacity: 0.8 
+    });
+    
+    this.highlightMesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    
+    // Position at intersection point
+    if (this.selectedSurface && this.selectedSurface.intersection) {
+      this.highlightMesh.position.copy(this.selectedSurface.intersection.point);
     }
     
-    mesh.material = highlightMaterial;
+    this.scene.add(this.highlightMesh);
+    console.log('Added highlight sphere at:', this.highlightMesh.position);
   }
 
   clearSurfaceSelection() {
-    if (this.selectedSurface) {
-      const mesh = this.selectedSurface.mesh;
-      const originalMaterial = this.originalMaterials.get(mesh);
-      if (originalMaterial) {
-        mesh.material = originalMaterial;
-      }
-      this.selectedSurface = null;
+    if (this.highlightMesh) {
+      this.scene.remove(this.highlightMesh);
+      this.highlightMesh.geometry.dispose();
+      this.highlightMesh.material.dispose();
+      this.highlightMesh = null;
     }
+    this.selectedSurface = null;
   }
 
   classifySurface(face, intersection) {
