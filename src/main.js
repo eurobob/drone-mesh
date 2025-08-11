@@ -15,6 +15,12 @@ class MeshExplorer {
     this.isLoadingHighRes = false;
     this.currentFiles = null;
     
+    // Surface selection
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.selectedSurface = null;
+    this.originalMaterials = new Map();
+    
     this.init();
     this.setupEventListeners();
     this.animate();
@@ -107,6 +113,122 @@ class MeshExplorer {
     });
 
     this.updateControlsInfo();
+    this.setupSurfaceSelection();
+  }
+
+  setupSurfaceSelection() {
+    const canvas = this.renderer.domElement;
+    
+    // Handle mouse clicks for desktop
+    canvas.addEventListener('click', (event) => {
+      if (!this.controls.isMouseDown) { // Only select if not dragging
+        this.handleSurfaceSelection(event.clientX, event.clientY);
+      }
+    });
+    
+    // Handle touch taps for mobile
+    let tapTimeout = null;
+    canvas.addEventListener('touchend', (event) => {
+      if (event.touches.length === 0 && event.changedTouches.length === 1) {
+        const touch = event.changedTouches[0];
+        // Use timeout to distinguish tap from drag
+        if (tapTimeout) clearTimeout(tapTimeout);
+        tapTimeout = setTimeout(() => {
+          this.handleSurfaceSelection(touch.clientX, touch.clientY);
+        }, 100);
+      }
+    });
+    
+    canvas.addEventListener('touchmove', () => {
+      if (tapTimeout) {
+        clearTimeout(tapTimeout);
+        tapTimeout = null;
+      }
+    });
+  }
+
+  handleSurfaceSelection(clientX, clientY) {
+    if (!this.currentMesh) return;
+
+    // Convert screen coordinates to normalized device coordinates
+    this.mouse.x = (clientX / window.innerWidth) * 2 - 1;
+    this.mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+
+    // Set up raycaster
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    // Find intersections
+    const intersects = this.raycaster.intersectObject(this.currentMesh, true);
+
+    if (intersects.length > 0) {
+      const intersection = intersects[0];
+      this.selectSurface(intersection);
+    }
+  }
+
+  selectSurface(intersection) {
+    // Clear previous selection
+    if (this.selectedSurface) {
+      this.clearSurfaceSelection();
+    }
+
+    const mesh = intersection.object;
+    const face = intersection.face;
+    
+    // Store original material
+    if (!this.originalMaterials.has(mesh)) {
+      this.originalMaterials.set(mesh, mesh.material.clone());
+    }
+
+    // Highlight the surface
+    this.highlightSurface(mesh, face);
+    this.selectedSurface = { mesh, face, intersection };
+    
+    // Classify surface type
+    const surfaceType = this.classifySurface(face, intersection);
+    console.log('Selected surface type:', surfaceType);
+  }
+
+  highlightSurface(mesh, face) {
+    // Create highlighted material
+    const highlightMaterial = mesh.material.clone();
+    highlightMaterial.color.setHex(0xff6b35); // Orange highlight
+    
+    // Only set emissive if the material supports it
+    if (highlightMaterial.emissive) {
+      highlightMaterial.emissive.setHex(0x442211);
+    }
+    
+    mesh.material = highlightMaterial;
+  }
+
+  clearSurfaceSelection() {
+    if (this.selectedSurface) {
+      const mesh = this.selectedSurface.mesh;
+      const originalMaterial = this.originalMaterials.get(mesh);
+      if (originalMaterial) {
+        mesh.material = originalMaterial;
+      }
+      this.selectedSurface = null;
+    }
+  }
+
+  classifySurface(face, intersection) {
+    // Get face normal in world coordinates
+    const normal = face.normal.clone();
+    normal.transformDirection(intersection.object.matrixWorld);
+    
+    // Classify based on normal vector
+    const upDot = normal.dot(new THREE.Vector3(0, 1, 0));
+    const angle = Math.acos(Math.abs(upDot)) * (180 / Math.PI);
+    
+    if (angle < 20) {
+      return upDot > 0 ? 'roof-flat' : 'floor';
+    } else if (angle > 70) {
+      return 'wall';
+    } else {
+      return upDot > 0 ? 'roof-pitched' : 'slope';
+    }
   }
 
   updateControlsInfo() {
