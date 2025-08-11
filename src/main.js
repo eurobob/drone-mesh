@@ -106,6 +106,28 @@ class MeshExplorer {
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
+    this.updateControlsInfo();
+  }
+
+  updateControlsInfo() {
+    const infoDiv = document.getElementById('info');
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0;
+    
+    if (isTouchDevice) {
+      infoDiv.innerHTML = `
+        <strong>Touch Controls:</strong><br>
+        1 finger - Look around<br>
+        2 finger pinch - Move forward/back<br>
+        3 finger drag - Pan left/right/up/down
+      `;
+    } else {
+      infoDiv.innerHTML = `
+        <strong>Desktop Controls:</strong><br>
+        WASD - Move<br>
+        Shift - Fast mode<br>
+        Click + Drag - Look around
+      `;
+    }
   }
 
   showLoading(text = 'Loading mesh...') {
