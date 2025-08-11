@@ -194,36 +194,140 @@ class MeshExplorer {
     
     const intersection = this.selectedSurface.intersection;
     
-    // Create a much smaller plane
-    const planeGeometry = new THREE.PlaneGeometry(0.5, 0.5); // Much smaller
-    const planeMaterial = new THREE.MeshBasicMaterial({
+    // Find all connected faces that form the same surface
+    const connectedFaces = this.findConnectedSurface(mesh, intersection.faceIndex, intersection.face.normal);
+    console.log('Found', connectedFaces.length, 'connected faces');
+    
+    // Create geometry from all connected faces
+    const geometry = new THREE.BufferGeometry();
+    const positions = [];
+    const positionAttribute = mesh.geometry.getAttribute('position');
+    
+    connectedFaces.forEach(faceIndex => {
+      if (mesh.geometry.index) {
+        // Indexed geometry
+        const indices = mesh.geometry.index.array;
+        
+        for (let i = 0; i < 3; i++) {
+          const vertexIndex = indices[faceIndex * 3 + i];
+          
+          // Get vertex position in world space
+          const vertex = new THREE.Vector3();
+          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
+          vertex.applyMatrix4(mesh.matrixWorld);
+          
+          positions.push(vertex.x, vertex.y, vertex.z);
+        }
+      } else {
+        // Non-indexed geometry
+        for (let i = 0; i < 3; i++) {
+          const vertexIndex = faceIndex * 3 + i;
+          
+          // Get vertex position in world space
+          const vertex = new THREE.Vector3();
+          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
+          vertex.applyMatrix4(mesh.matrixWorld);
+          
+          positions.push(vertex.x, vertex.y, vertex.z);
+        }
+      }
+    });
+    
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    
+    const highlightMaterial = new THREE.MeshBasicMaterial({
       color: 0xff6b35,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.7,
       side: THREE.DoubleSide
     });
     
-    this.highlightMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+    this.highlightMesh = new THREE.Mesh(geometry, highlightMaterial);
     
-    // Position at intersection point
-    this.highlightMesh.position.copy(intersection.point);
-    
-    // Get world-space normal
+    // Offset the entire highlight slightly along face normal to avoid z-fighting
     const worldNormal = intersection.face.normal.clone();
     worldNormal.transformDirection(mesh.matrixWorld);
     worldNormal.normalize();
+    const offset = worldNormal.multiplyScalar(0.01);
     
-    // Create a quaternion to align the plane with the surface normal
-    const quaternion = new THREE.Quaternion();
-    quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), worldNormal);
-    this.highlightMesh.setRotationFromQuaternion(quaternion);
+    // Apply offset to each vertex
+    const offsetPositions = [];
+    for (let i = 0; i < positions.length; i += 3) {
+      offsetPositions.push(
+        positions[i] + offset.x,
+        positions[i + 1] + offset.y,
+        positions[i + 2] + offset.z
+      );
+    }
     
-    // Offset slightly along normal to avoid z-fighting
-    const offset = worldNormal.clone().multiplyScalar(0.02);
-    this.highlightMesh.position.add(offset);
+    this.highlightMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(offsetPositions, 3));
     
     this.scene.add(this.highlightMesh);
-    console.log('Added highlight plane at:', this.highlightMesh.position);
+    console.log('Added surface highlight with', connectedFaces.length, 'faces');
+  }
+
+  findConnectedSurface(mesh, startFaceIndex, targetNormal, normalTolerance = 0.1, maxFaces = 200) {
+    const connectedFaces = new Set();
+    const toProcess = [startFaceIndex];
+    const positionAttribute = mesh.geometry.getAttribute('position');
+    const normalAttribute = mesh.geometry.getAttribute('normal');
+    
+    while (toProcess.length > 0 && connectedFaces.size < maxFaces) {
+      const faceIndex = toProcess.pop();
+      
+      if (connectedFaces.has(faceIndex)) continue;
+      
+      // Get face normal
+      let faceNormal;
+      if (normalAttribute) {
+        // Average the vertex normals
+        faceNormal = new THREE.Vector3();
+        for (let i = 0; i < 3; i++) {
+          const vertexIndex = mesh.geometry.index ? 
+            mesh.geometry.index.array[faceIndex * 3 + i] : 
+            faceIndex * 3 + i;
+          
+          const normal = new THREE.Vector3();
+          normal.fromBufferAttribute(normalAttribute, vertexIndex);
+          faceNormal.add(normal);
+        }
+        faceNormal.normalize();
+      } else {
+        // Calculate face normal from vertices
+        const vertices = [];
+        for (let i = 0; i < 3; i++) {
+          const vertexIndex = mesh.geometry.index ? 
+            mesh.geometry.index.array[faceIndex * 3 + i] : 
+            faceIndex * 3 + i;
+          
+          const vertex = new THREE.Vector3();
+          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
+          vertices.push(vertex);
+        }
+        
+        const edge1 = vertices[1].clone().sub(vertices[0]);
+        const edge2 = vertices[2].clone().sub(vertices[0]);
+        faceNormal = edge1.cross(edge2).normalize();
+      }
+      
+      // Check if normal is similar to target
+      const dot = Math.abs(faceNormal.dot(targetNormal));
+      if (dot > (1 - normalTolerance)) {
+        connectedFaces.add(faceIndex);
+        
+        // Add adjacent faces to process (simplified - just add nearby face indices)
+        for (let i = -2; i <= 2; i++) {
+          const adjacentFace = faceIndex + i;
+          if (adjacentFace >= 0 && 
+              adjacentFace < (mesh.geometry.index ? mesh.geometry.index.array.length / 3 : positionAttribute.count / 3) &&
+              !connectedFaces.has(adjacentFace)) {
+            toProcess.push(adjacentFace);
+          }
+        }
+      }
+    }
+    
+    return Array.from(connectedFaces);
   }
 
   clearSurfaceSelection() {
