@@ -77,6 +77,37 @@ export class MeshLoader {
     }
   }
 
+  async loadFromUrl(url, onProgress) {
+    const extension = url.split('.').pop().toLowerCase().split('?')[0];
+    
+    try {
+      let mesh;
+      
+      switch (extension) {
+        case 'obj':
+          mesh = await this.loadOBJ(url);
+          break;
+        case 'gltf':
+        case 'glb':
+          mesh = await this.loadGLTF(url, onProgress);
+          break;
+        case 'ply':
+          mesh = await this.loadPLY(url);
+          break;
+        case 'stl':
+          mesh = await this.loadSTL(url);
+          break;
+        default:
+          // If no extension, assume GLB (for URLs without extensions)
+          mesh = await this.loadGLTF(url, onProgress);
+      }
+
+      return mesh;
+    } catch (error) {
+      throw error;
+    }
+  }
+
   async loadFile(file) {
     const extension = file.name.split('.').pop().toLowerCase();
     const url = URL.createObjectURL(file);
@@ -174,7 +205,8 @@ export class MeshLoader {
               child.receiveShadow = true;
             }
           });
-          this.scene.add(object);
+          // Don't add to scene yet - let main.js handle it after processing
+          // this.scene.add(object);
           resolve(object);
         },
         (progress) => {
@@ -185,7 +217,7 @@ export class MeshLoader {
     });
   }
 
-  loadGLTF(url) {
+  loadGLTF(url, onProgress) {
     return new Promise((resolve, reject) => {
       console.log('Starting GLTF load from URL:', url);
       this.loaders.gltf.load(
@@ -208,12 +240,15 @@ export class MeshLoader {
               }
             }
           });
-          this.scene.add(object);
+          // Don't add to scene yet - let main.js handle it after processing
+          // this.scene.add(object);
           resolve(object);
         },
         (progress) => {
           if (progress.total > 0) {
-            console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
+            const percent = Math.round((progress.loaded / progress.total) * 100);
+            console.log('Loading progress:', percent + '%');
+            if (onProgress) onProgress(progress);
           }
         },
         (error) => {
@@ -241,7 +276,8 @@ export class MeshLoader {
           
           const object = new THREE.Group();
           object.add(mesh);
-          this.scene.add(object);
+          // Don't add to scene yet - let main.js handle it after processing
+          // this.scene.add(object);
           resolve(object);
         },
         (progress) => {
@@ -268,7 +304,8 @@ export class MeshLoader {
           
           const object = new THREE.Group();
           object.add(mesh);
-          this.scene.add(object);
+          // Don't add to scene yet - let main.js handle it after processing
+          // this.scene.add(object);
           resolve(object);
         },
         (progress) => {

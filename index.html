@@ -75,6 +75,34 @@
       margin-top: 10px;
       font-size: 14px;
     }
+    #progressive-loader {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.6);
+      padding: 8px 16px;
+      border-radius: 20px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+    }
+    #progressive-loader.active {
+      display: flex;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background: #3498db;
+      border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .pulse-dot:nth-child(2) { animation-delay: 0.2s; }
+    .pulse-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
   </style>
 </head>
 <body>
@@ -94,6 +122,12 @@
     <div class="loader"></div>
     <div id="loading-text">Loading mesh...</div>
     <div id="loading-progress"></div>
+  </div>
+  <div id="progressive-loader">
+    <div class="pulse-dot"></div>
+    <div class="pulse-dot"></div>
+    <div class="pulse-dot"></div>
+    <span style="color: white; font-size: 12px; margin-left: 5px;">Enhancing quality...</span>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>
