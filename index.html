@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drone Mesh Explorer</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+    }
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+    }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+    #file-input-container {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 5px;
+    }
+    #file-input {
+      padding: 5px;
+      border-radius: 3px;
+      border: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="info">
+    <strong>Controls:</strong><br>
+    WASD - Move<br>
+    Mouse - Look around<br>
+    Click - Enable pointer lock
+  </div>
+  <div id="file-input-container">
+    <input type="file" id="file-input" accept=".obj,.gltf,.glb,.ply,.stl" />
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
