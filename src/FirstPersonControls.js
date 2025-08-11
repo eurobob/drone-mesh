@@ -29,13 +29,7 @@ export class FirstPersonControls {
   }
   
   init() {
-    this.domElement.addEventListener('click', () => {
-      this.domElement.requestPointerLock();
-    });
-    
-    document.addEventListener('pointerlockchange', () => {
-      this.isPointerLocked = document.pointerLockElement === this.domElement;
-    });
+    this.isMouseDown = true; // Always active
     
     document.addEventListener('keydown', (e) => this.onKeyDown(e));
     document.addEventListener('keyup', (e) => this.onKeyUp(e));
@@ -87,26 +81,16 @@ export class FirstPersonControls {
   }
   
   onMouseMove(event) {
-    if (this.isPointerLocked) {
-      const movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
-      const movementY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
-      
-      this.lon -= movementX * this.lookSpeed * 100;
-      this.lat -= movementY * this.lookSpeed * 100;
-      
-      this.lat = Math.max(-85, Math.min(85, this.lat));
-    } else if (this.isMouseDown) {
-      const deltaX = event.clientX - this.mouseX;
-      const deltaY = event.clientY - this.mouseY;
-      
-      this.lon -= deltaX * this.lookSpeed * 50;
-      this.lat -= deltaY * this.lookSpeed * 50;
-      
-      this.lat = Math.max(-85, Math.min(85, this.lat));
-      
-      this.mouseX = event.clientX;
-      this.mouseY = event.clientY;
-    }
+    const deltaX = event.clientX - this.mouseX;
+    const deltaY = event.clientY - this.mouseY;
+    
+    this.lon += deltaX * this.lookSpeed * 50; // Fixed: changed from -= to +=
+    this.lat -= deltaY * this.lookSpeed * 50;
+    
+    this.lat = Math.max(-85, Math.min(85, this.lat));
+    
+    this.mouseX = event.clientX;
+    this.mouseY = event.clientY;
   }
   
   onMouseDown(event) {
@@ -132,7 +116,7 @@ export class FirstPersonControls {
     this.velocity.y -= this.velocity.y * 10.0 * delta;
     
     this.direction.z = Number(this.moveForward) - Number(this.moveBackward);
-    this.direction.x = Number(this.moveLeft) - Number(this.moveRight);
+    this.direction.x = Number(this.moveRight) - Number(this.moveLeft); // Fixed: swapped left and right
     this.direction.normalize();
     
     if (this.moveForward || this.moveBackward) {
