@@ -5,13 +5,16 @@ export class FirstPersonControls {
     this.camera = camera;
     this.domElement = domElement;
     
-    this.movementSpeed = 10;
+    this.baseMoveSpeed = 3;  // Slower base speed
+    this.fastMoveSpeed = 12; // Fast mode speed
+    this.movementSpeed = this.baseMoveSpeed;
     this.lookSpeed = 0.002;
     
     this.moveForward = false;
     this.moveBackward = false;
     this.moveLeft = false;
     this.moveRight = false;
+    this.isShiftPressed = false;
     
     this.lat = 0;
     this.lon = 0;
@@ -56,6 +59,11 @@ export class FirstPersonControls {
       case 'ArrowRight':
         this.moveRight = true;
         break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this.isShiftPressed = true;
+        this.movementSpeed = this.fastMoveSpeed;
+        break;
     }
   }
   
@@ -76,6 +84,11 @@ export class FirstPersonControls {
       case 'KeyD':
       case 'ArrowRight':
         this.moveRight = false;
+        break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this.isShiftPressed = false;
+        this.movementSpeed = this.baseMoveSpeed;
         break;
     }
   }

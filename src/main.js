@@ -318,9 +318,10 @@ class MeshExplorer {
     console.log(`Processed ${meshCount} meshes with ${materialCount} materials`);
     logTiming('Material optimization');
     
-    // Set camera position only for first mesh
+    // Set camera position only for first mesh - moved back and looking down slightly
     if (!this.currentMesh) {
-      this.camera.position.set(0, size.y * scale * 0.5, size.z * scale * 1.5);
+      this.camera.position.set(0, size.y * scale * 0.5, size.z * scale * 2.5);  // Further back
+      this.controls.lat = -15; // Look down slightly
       this.controls.reset();
     }
     logTiming('Camera setup');
