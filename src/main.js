@@ -1,9 +1,9 @@
-import * as THREE from 'three';
-import { FirstPersonControls } from './FirstPersonControls.js';
-import { MeshLoader } from './MeshLoader.js';
+import * as THREE from "three";
+import { FirstPersonControls } from "./FirstPersonControls.js";
+import { MeshLoader } from "./MeshLoader.js";
 
 // Configuration toggle
-const ENABLE_SURFACE_SELECTION = false;  // Set to true to enable surface selection
+const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
 
 class MeshExplorer {
   constructor() {
@@ -17,28 +17,28 @@ class MeshExplorer {
     this.highResMesh = null;
     this.isLoadingHighRes = false;
     this.currentFiles = null;
-    
+
     // Surface selection
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
     this.selectedSurface = null;
     this.highlightMesh = null;
-    
+
     this.init();
     this.setupEventListeners();
     this.animate();
-    
+
     // Auto-load the coconut farm mesh
     this.loadProgressiveMesh(
-      'https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq',
-      'https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl'
+      "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq",
+      "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl"
     );
   }
 
   init() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87CEEB);
-    this.scene.fog = new THREE.Fog(0x87CEEB, 10, 1000);
+    this.scene.background = new THREE.Color(0x87ceeb);
+    this.scene.fog = new THREE.Fog(0x87ceeb, 10, 1000);
 
     this.camera = new THREE.PerspectiveCamera(
       75,
@@ -52,11 +52,14 @@ class MeshExplorer {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    
-    const container = document.getElementById('canvas-container');
+
+    const container = document.getElementById("canvas-container");
     container.appendChild(this.renderer.domElement);
 
-    this.controls = new FirstPersonControls(this.camera, this.renderer.domElement);
+    this.controls = new FirstPersonControls(
+      this.camera,
+      this.renderer.domElement
+    );
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     this.scene.add(ambientLight);
@@ -79,7 +82,7 @@ class MeshExplorer {
 
     // Create thick custom axes with cylinders
     const axesGroup = new THREE.Group();
-    
+
     // X-axis (red)
     const xGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
     const xMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
@@ -87,14 +90,14 @@ class MeshExplorer {
     xAxis.rotation.z = -Math.PI / 2;
     xAxis.position.x = 2.5;
     axesGroup.add(xAxis);
-    
+
     // Y-axis (green)
     const yGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
     const yMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
     const yAxis = new THREE.Mesh(yGeometry, yMaterial);
     yAxis.position.y = 2.5;
     axesGroup.add(yAxis);
-    
+
     // Z-axis (blue)
     const zGeometry = new THREE.CylinderGeometry(0.1, 0.1, 5, 8);
     const zMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
@@ -102,14 +105,14 @@ class MeshExplorer {
     zAxis.rotation.x = Math.PI / 2;
     zAxis.position.z = 2.5;
     axesGroup.add(zAxis);
-    
+
     // this.scene.add(axesGroup); // Hidden for now
 
     this.meshLoader = new MeshLoader(this.scene);
   }
 
   setupEventListeners() {
-    window.addEventListener('resize', () => {
+    window.addEventListener("resize", () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -122,19 +125,20 @@ class MeshExplorer {
   setupSurfaceSelection() {
     // Skip if surface selection is disabled
     if (!ENABLE_SURFACE_SELECTION) return;
-    
+
     const canvas = this.renderer.domElement;
-    
+
     // Handle mouse clicks for desktop
-    canvas.addEventListener('click', (event) => {
-      if (!this.controls.isMouseDown) { // Only select if not dragging
+    canvas.addEventListener("click", (event) => {
+      if (!this.controls.isMouseDown) {
+        // Only select if not dragging
         this.handleSurfaceSelection(event.clientX, event.clientY);
       }
     });
-    
+
     // Handle touch taps for mobile
     let tapTimeout = null;
-    canvas.addEventListener('touchend', (event) => {
+    canvas.addEventListener("touchend", (event) => {
       if (event.touches.length === 0 && event.changedTouches.length === 1) {
         const touch = event.changedTouches[0];
         // Use timeout to distinguish tap from drag
@@ -144,8 +148,8 @@ class MeshExplorer {
         }, 100);
       }
     });
-    
-    canvas.addEventListener('touchmove', () => {
+
+    canvas.addEventListener("touchmove", () => {
       if (tapTimeout) {
         clearTimeout(tapTimeout);
         tapTimeout = null;
@@ -180,82 +184,89 @@ class MeshExplorer {
 
     const mesh = intersection.object;
     const face = intersection.face;
-    
-    console.log('Selecting surface:', { mesh, face, intersection });
+
+    console.log("Selecting surface:", { mesh, face, intersection });
 
     // Set selected surface first
     this.selectedSurface = { mesh, face, intersection };
-    
+
     // Then highlight the surface
     this.highlightSurface(mesh, face);
-    
+
     // Classify surface type
     const surfaceType = this.classifySurface(face, intersection);
-    console.log('Selected surface type:', surfaceType);
+    console.log("Selected surface type:", surfaceType);
   }
 
   highlightSurface(mesh, face) {
-    console.log('Highlighting surface with face:', face);
-    console.log('Intersection data:', this.selectedSurface.intersection);
-    
+    console.log("Highlighting surface with face:", face);
+    console.log("Intersection data:", this.selectedSurface.intersection);
+
     const intersection = this.selectedSurface.intersection;
-    
+
     // Find all connected faces that form the same surface
-    const connectedFaces = this.findConnectedSurface(mesh, intersection.faceIndex, intersection.face.normal);
-    console.log('Found', connectedFaces.length, 'connected faces');
-    
+    const connectedFaces = this.findConnectedSurface(
+      mesh,
+      intersection.faceIndex,
+      intersection.face.normal
+    );
+    console.log("Found", connectedFaces.length, "connected faces");
+
     // Create geometry from all connected faces
     const geometry = new THREE.BufferGeometry();
     const positions = [];
-    const positionAttribute = mesh.geometry.getAttribute('position');
-    
-    connectedFaces.forEach(faceIndex => {
+    const positionAttribute = mesh.geometry.getAttribute("position");
+
+    connectedFaces.forEach((faceIndex) => {
       if (mesh.geometry.index) {
         // Indexed geometry
         const indices = mesh.geometry.index.array;
-        
+
         for (let i = 0; i < 3; i++) {
           const vertexIndex = indices[faceIndex * 3 + i];
-          
+
           // Get vertex position in world space
           const vertex = new THREE.Vector3();
           vertex.fromBufferAttribute(positionAttribute, vertexIndex);
           vertex.applyMatrix4(mesh.matrixWorld);
-          
+
           positions.push(vertex.x, vertex.y, vertex.z);
         }
       } else {
         // Non-indexed geometry
         for (let i = 0; i < 3; i++) {
           const vertexIndex = faceIndex * 3 + i;
-          
+
           // Get vertex position in world space
           const vertex = new THREE.Vector3();
           vertex.fromBufferAttribute(positionAttribute, vertexIndex);
           vertex.applyMatrix4(mesh.matrixWorld);
-          
+
           positions.push(vertex.x, vertex.y, vertex.z);
         }
       }
     });
-    
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    
+
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3)
+    );
+
     const highlightMaterial = new THREE.MeshBasicMaterial({
       color: 0xff6b35,
       transparent: true,
       opacity: 0.7,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
     });
-    
+
     this.highlightMesh = new THREE.Mesh(geometry, highlightMaterial);
-    
+
     // Offset the entire highlight slightly along face normal to avoid z-fighting
     const worldNormal = intersection.face.normal.clone();
     worldNormal.transformDirection(mesh.matrixWorld);
     worldNormal.normalize();
     const offset = worldNormal.multiplyScalar(0.01);
-    
+
     // Apply offset to each vertex
     const offsetPositions = [];
     for (let i = 0; i < positions.length; i += 3) {
@@ -265,34 +276,43 @@ class MeshExplorer {
         positions[i + 2] + offset.z
       );
     }
-    
-    this.highlightMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(offsetPositions, 3));
-    
+
+    this.highlightMesh.geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(offsetPositions, 3)
+    );
+
     this.scene.add(this.highlightMesh);
-    console.log('Added surface highlight with', connectedFaces.length, 'faces');
+    console.log("Added surface highlight with", connectedFaces.length, "faces");
   }
 
-  findConnectedSurface(mesh, startFaceIndex, targetNormal, normalTolerance = 0.1, maxFaces = 200) {
+  findConnectedSurface(
+    mesh,
+    startFaceIndex,
+    targetNormal,
+    normalTolerance = 0.1,
+    maxFaces = 200
+  ) {
     const connectedFaces = new Set();
     const toProcess = [startFaceIndex];
-    const positionAttribute = mesh.geometry.getAttribute('position');
-    const normalAttribute = mesh.geometry.getAttribute('normal');
-    
+    const positionAttribute = mesh.geometry.getAttribute("position");
+    const normalAttribute = mesh.geometry.getAttribute("normal");
+
     while (toProcess.length > 0 && connectedFaces.size < maxFaces) {
       const faceIndex = toProcess.pop();
-      
+
       if (connectedFaces.has(faceIndex)) continue;
-      
+
       // Get face normal
       let faceNormal;
       if (normalAttribute) {
         // Average the vertex normals
         faceNormal = new THREE.Vector3();
         for (let i = 0; i < 3; i++) {
-          const vertexIndex = mesh.geometry.index ? 
-            mesh.geometry.index.array[faceIndex * 3 + i] : 
-            faceIndex * 3 + i;
-          
+          const vertexIndex = mesh.geometry.index
+            ? mesh.geometry.index.array[faceIndex * 3 + i]
+            : faceIndex * 3 + i;
+
           const normal = new THREE.Vector3();
           normal.fromBufferAttribute(normalAttribute, vertexIndex);
           faceNormal.add(normal);
@@ -302,37 +322,42 @@ class MeshExplorer {
         // Calculate face normal from vertices
         const vertices = [];
         for (let i = 0; i < 3; i++) {
-          const vertexIndex = mesh.geometry.index ? 
-            mesh.geometry.index.array[faceIndex * 3 + i] : 
-            faceIndex * 3 + i;
-          
+          const vertexIndex = mesh.geometry.index
+            ? mesh.geometry.index.array[faceIndex * 3 + i]
+            : faceIndex * 3 + i;
+
           const vertex = new THREE.Vector3();
           vertex.fromBufferAttribute(positionAttribute, vertexIndex);
           vertices.push(vertex);
         }
-        
+
         const edge1 = vertices[1].clone().sub(vertices[0]);
         const edge2 = vertices[2].clone().sub(vertices[0]);
         faceNormal = edge1.cross(edge2).normalize();
       }
-      
+
       // Check if normal is similar to target
       const dot = Math.abs(faceNormal.dot(targetNormal));
-      if (dot > (1 - normalTolerance)) {
+      if (dot > 1 - normalTolerance) {
         connectedFaces.add(faceIndex);
-        
+
         // Add adjacent faces to process (simplified - just add nearby face indices)
         for (let i = -2; i <= 2; i++) {
           const adjacentFace = faceIndex + i;
-          if (adjacentFace >= 0 && 
-              adjacentFace < (mesh.geometry.index ? mesh.geometry.index.array.length / 3 : positionAttribute.count / 3) &&
-              !connectedFaces.has(adjacentFace)) {
+          if (
+            adjacentFace >= 0 &&
+            adjacentFace <
+              (mesh.geometry.index
+                ? mesh.geometry.index.array.length / 3
+                : positionAttribute.count / 3) &&
+            !connectedFaces.has(adjacentFace)
+          ) {
             toProcess.push(adjacentFace);
           }
         }
       }
     }
-    
+
     return Array.from(connectedFaces);
   }
 
@@ -350,24 +375,27 @@ class MeshExplorer {
     // Get face normal in world coordinates
     const normal = face.normal.clone();
     normal.transformDirection(intersection.object.matrixWorld);
-    
+
     // Classify based on normal vector
     const upDot = normal.dot(new THREE.Vector3(0, 1, 0));
     const angle = Math.acos(Math.abs(upDot)) * (180 / Math.PI);
-    
+
     if (angle < 20) {
-      return upDot > 0 ? 'roof-flat' : 'floor';
+      return upDot > 0 ? "roof-flat" : "floor";
     } else if (angle > 70) {
-      return 'wall';
+      return "wall";
     } else {
-      return upDot > 0 ? 'roof-pitched' : 'slope';
+      return upDot > 0 ? "roof-pitched" : "slope";
     }
   }
 
   updateControlsInfo() {
-    const infoDiv = document.getElementById('info');
-    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0;
-    
+    const infoDiv = document.getElementById("info");
+    const isTouchDevice =
+      "ontouchstart" in window ||
+      navigator.maxTouchPoints > 0 ||
+      navigator.msMaxTouchPoints > 0;
+
     if (isTouchDevice) {
       infoDiv.innerHTML = `
         <strong>Touch Controls:</strong><br>
@@ -385,23 +413,23 @@ class MeshExplorer {
     }
   }
 
-  showLoading(text = 'Loading mesh...') {
-    const overlay = document.getElementById('loading-overlay');
-    const loadingText = document.getElementById('loading-text');
-    const progressText = document.getElementById('loading-progress');
-    
-    overlay.classList.add('active');
+  showLoading(text = "Loading mesh...") {
+    const overlay = document.getElementById("loading-overlay");
+    const loadingText = document.getElementById("loading-text");
+    const progressText = document.getElementById("loading-progress");
+
+    overlay.classList.add("active");
     loadingText.textContent = text;
-    progressText.textContent = '';
+    progressText.textContent = "";
   }
-  
+
   hideLoading() {
-    const overlay = document.getElementById('loading-overlay');
-    overlay.classList.remove('active');
+    const overlay = document.getElementById("loading-overlay");
+    overlay.classList.remove("active");
   }
-  
+
   updateLoadingProgress(progress) {
-    const progressText = document.getElementById('loading-progress');
+    const progressText = document.getElementById("loading-progress");
     if (progress && progress.total > 0) {
       const percent = Math.round((progress.loaded / progress.total) * 100);
       progressText.textContent = `${percent}%`;
@@ -411,66 +439,78 @@ class MeshExplorer {
   async loadMeshFiles(files) {
     const startTime = performance.now();
     let lastTime = startTime;
-    
+
     const logTiming = (label) => {
       const now = performance.now();
       const delta = now - lastTime;
       const total = now - startTime;
-      console.log(`[TIMING] ${label}: ${delta.toFixed(0)}ms (total: ${total.toFixed(0)}ms)`);
+      console.log(
+        `[TIMING] ${label}: ${delta.toFixed(0)}ms (total: ${total.toFixed(
+          0
+        )}ms)`
+      );
       lastTime = now;
     };
-    
+
     try {
-      this.showLoading('Loading mesh file...');
-      
+      this.showLoading("Loading mesh file...");
+
       if (this.currentMesh) {
         this.scene.remove(this.currentMesh);
       }
-      logTiming('Scene cleanup');
-      
+      logTiming("Scene cleanup");
+
       // Check if it's a single GLB/GLTF file
       const filesArray = Array.from(files);
-      console.log('Loading files:', filesArray.map(f => f.name));
-      
-      const glbFile = filesArray.find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
-      
+      console.log(
+        "Loading files:",
+        filesArray.map((f) => f.name)
+      );
+
+      const glbFile = filesArray.find(
+        (f) => f.name.endsWith(".glb") || f.name.endsWith(".gltf")
+      );
+
       // Use setTimeout to allow UI to update before heavy processing
-      await new Promise(resolve => setTimeout(resolve, 10));
-      logTiming('UI update delay');
-      
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      logTiming("UI update delay");
+
       if (glbFile) {
-        console.log('Loading GLB file:', glbFile.name);
-        this.currentMesh = await this.meshLoader.loadFile(glbFile, (progress) => {
-          this.updateLoadingProgress(progress);
-        });
+        console.log("Loading GLB file:", glbFile.name);
+        this.currentMesh = await this.meshLoader.loadFile(
+          glbFile,
+          (progress) => {
+            this.updateLoadingProgress(progress);
+          }
+        );
       } else {
         // Handle multiple files (OBJ + MTL + textures)
-        console.log('Loading multiple files');
+        console.log("Loading multiple files");
         this.currentMesh = await this.meshLoader.loadFiles(filesArray);
       }
-      logTiming('File loaded and parsed');
-      
-      console.log('Mesh loaded successfully:', this.currentMesh);
-      
-      this.showLoading('Processing geometry...');
-      
+      logTiming("File loaded and parsed");
+
+      console.log("Mesh loaded successfully:", this.currentMesh);
+
+      this.showLoading("Processing geometry...");
+
       // Calculate bounds BEFORE adding to scene
       const box = new THREE.Box3().setFromObject(this.currentMesh);
-      logTiming('Bounding box calculation');
-      
+      logTiming("Bounding box calculation");
+
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
-      
-      console.log('Mesh size:', size);
-      
+
+      console.log("Mesh size:", size);
+
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 50 / maxDim;
       this.currentMesh.scale.multiplyScalar(scale);
-      
+
       this.currentMesh.position.sub(center.multiplyScalar(scale));
       this.currentMesh.position.y = 0;
-      logTiming('Scaling and positioning');
-      
+      logTiming("Scaling and positioning");
+
       // Optimize materials for large meshes
       let meshCount = 0;
       let materialCount = 0;
@@ -479,125 +519,132 @@ class MeshExplorer {
           meshCount++;
           // Enable frustum culling
           child.frustumCulled = true;
-          
+
           // Optimize material settings
           if (child.material) {
             materialCount++;
-            child.material.precision = 'mediump';
+            child.material.precision = "mediump";
           }
         }
       });
-      console.log(`Processed ${meshCount} meshes with ${materialCount} materials`);
-      logTiming('Material optimization');
-      
+      console.log(
+        `Processed ${meshCount} meshes with ${materialCount} materials`
+      );
+      logTiming("Material optimization");
+
       this.camera.position.set(0, size.y * scale * 0.5, size.z * scale * 1.5);
       this.controls.reset();
-      logTiming('Camera setup');
-      
+      logTiming("Camera setup");
+
       // Now add to scene after all processing is done
-      this.showLoading('Adding to scene...');
-      await new Promise(resolve => setTimeout(resolve, 10));
+      this.showLoading("Adding to scene...");
+      await new Promise((resolve) => setTimeout(resolve, 10));
       this.scene.add(this.currentMesh);
-      logTiming('Added to scene');
-      
+      logTiming("Added to scene");
+
       // Force a render to upload to GPU
-      this.showLoading('Uploading to GPU...');
-      await new Promise(resolve => setTimeout(resolve, 10));
+      this.showLoading("Uploading to GPU...");
+      await new Promise((resolve) => setTimeout(resolve, 10));
       this.renderer.render(this.scene, this.camera);
-      logTiming('First render (GPU upload)');
-      
+      logTiming("First render (GPU upload)");
+
       this.hideLoading();
-      logTiming('Complete');
-      
+      logTiming("Complete");
     } catch (error) {
       this.hideLoading();
-      console.error('Detailed error loading mesh:', error);
-      console.error('Error stack:', error.stack);
+      console.error("Detailed error loading mesh:", error);
+      console.error("Error stack:", error.stack);
       alert(`Failed to load mesh file: ${error.message}`);
     }
   }
 
   showProgressiveLoader() {
-    const loader = document.getElementById('progressive-loader');
-    loader.classList.add('active');
+    const loader = document.getElementById("progressive-loader");
+    loader.classList.add("active");
   }
-  
+
   hideProgressiveLoader() {
-    const loader = document.getElementById('progressive-loader');
-    loader.classList.remove('active');
+    const loader = document.getElementById("progressive-loader");
+    loader.classList.remove("active");
   }
 
   async loadProgressiveMesh(lowResUrl, highResUrl) {
     try {
       // Load low-res version first
-      this.showLoading('Loading preview...');
-      console.log('Loading low-res mesh...');
-      
-      this.lowResMesh = await this.meshLoader.loadFromUrl(lowResUrl, (progress) => {
-        this.updateLoadingProgress(progress);
-      });
-      
+      this.showLoading("Loading preview...");
+      console.log("Loading low-res mesh...");
+
+      this.lowResMesh = await this.meshLoader.loadFromUrl(
+        lowResUrl,
+        (progress) => {
+          this.updateLoadingProgress(progress);
+        }
+      );
+
       await this.setupMesh(this.lowResMesh);
       this.hideLoading();
-      console.log('Low-res mesh loaded and displayed');
-      
+      console.log("Low-res mesh loaded and displayed");
+
       // Start loading high-res in background
       this.showProgressiveLoader();
       this.isLoadingHighRes = true;
-      
-      console.log('Starting high-res load in background...');
+
+      console.log("Starting high-res load in background...");
       this.highResMesh = await this.meshLoader.loadFromUrl(highResUrl);
-      
+
       // Swap to high-res
       await this.swapToHighRes();
-      
     } catch (error) {
       this.hideLoading();
       this.hideProgressiveLoader();
-      console.error('Error loading progressive mesh:', error);
+      console.error("Error loading progressive mesh:", error);
       alert(`Failed to load mesh: ${error.message}`);
     }
   }
-  
+
   async setupMesh(mesh) {
     const startTime = performance.now();
     let lastTime = startTime;
-    
+
     const logTiming = (label) => {
       const now = performance.now();
       const delta = now - lastTime;
       const total = now - startTime;
-      console.log(`[TIMING] ${label}: ${delta.toFixed(0)}ms (total: ${total.toFixed(0)}ms)`);
+      console.log(
+        `[TIMING] ${label}: ${delta.toFixed(0)}ms (total: ${total.toFixed(
+          0
+        )}ms)`
+      );
       lastTime = now;
     };
-    
+
     if (this.currentMesh) {
       this.scene.remove(this.currentMesh);
     }
-    
+
     // Calculate bounds BEFORE adding to scene
     const box = new THREE.Box3().setFromObject(mesh);
-    logTiming('Bounding box calculation');
-    
+    logTiming("Bounding box calculation");
+
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    
-    console.log('Mesh size:', size);
-    
+
+    console.log("Mesh size:", size);
+
     // Fix mesh orientation - rotate in world coordinates
-    mesh.rotation.order = 'YXZ'; // Apply Y rotation first, then X
+    mesh.rotation.order = "YXZ"; // Apply Y rotation first, then X
     mesh.rotation.y = Math.PI; // 180 degrees around world Y-axis first
     mesh.rotation.x = -Math.PI / 2; // Then 90 degrees around X-axis
-    logTiming('Mesh rotation fix');
-    
+    logTiming("Mesh rotation fix");
+
     const maxDim = Math.max(size.x, size.y, size.z);
     const scale = 50 / maxDim;
     mesh.scale.multiplyScalar(scale);
-    
+
     mesh.position.sub(center.multiplyScalar(scale));
     mesh.position.y = 0;
-    logTiming('Scaling and positioning');
-    
+    logTiming("Scaling and positioning");
+
     // Optimize materials for large meshes
     let meshCount = 0;
     let materialCount = 0;
@@ -607,108 +654,112 @@ class MeshExplorer {
         child.frustumCulled = true;
         child.castShadow = false;
         child.receiveShadow = false;
-        
+
         if (child.material) {
           materialCount++;
-          child.material.precision = 'mediump';
+          child.material.precision = "mediump";
         }
       }
     });
-    console.log(`Processed ${meshCount} meshes with ${materialCount} materials`);
-    logTiming('Material optimization');
-    
+    console.log(
+      `Processed ${meshCount} meshes with ${materialCount} materials`
+    );
+    logTiming("Material optimization");
+
     // Set camera position only for first mesh - up and back from origin
     if (!this.currentMesh) {
-      this.camera.position.set(0, 10, 15);  // Up and back from origin
+      this.camera.position.set(0, 10, 15); // Up and back from origin
       this.controls.reset();
       this.controls.lat = -15; // Look down slightly
       this.controls.lon = -90; // Rotate to look along Z-axis
     }
-    logTiming('Camera setup');
-    
+    logTiming("Camera setup");
+
     // Add to scene
     this.scene.add(mesh);
     this.currentMesh = mesh;
-    logTiming('Added to scene');
-    
+    logTiming("Added to scene");
+
     // Force render
     this.renderer.render(this.scene, this.camera);
-    logTiming('First render (GPU upload)');
-    
+    logTiming("First render (GPU upload)");
+
     return mesh;
   }
-  
+
   async swapToHighRes() {
-    console.log('Swapping to high-res mesh...');
-    
+    console.log("Swapping to high-res mesh...");
+
     // Check if high-res has many children or single mesh
     const meshes = [];
-    this.highResMesh.traverse(child => {
+    this.highResMesh.traverse((child) => {
       if (child.isMesh) meshes.push(child);
     });
-    
+
     console.log(`High-res mesh has ${meshes.length} child meshes`);
-    
+
     // Use gradual loading for the 130 meshes
     await this.addSceneGradually(this.highResMesh);
-    
+
     this.hideProgressiveLoader();
     this.isLoadingHighRes = false;
-    
-    console.log('Successfully swapped to high-res mesh');
+
+    console.log("Successfully swapped to high-res mesh");
   }
 
   addSceneGradually(obj3d, batchSize = 2) {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       const meshes = [];
-      obj3d.traverse(child => {
+      obj3d.traverse((child) => {
         if (child.isMesh) {
           child.castShadow = false;
           child.receiveShadow = false;
           child.frustumCulled = true;
-          if (child.material) child.material.precision = 'mediump';
+          if (child.material) child.material.precision = "mediump";
           meshes.push(child);
         }
       });
-      
+
       // Apply transformations to the group
       const group = new THREE.Group();
-      group.rotation.order = 'YXZ';
+      group.rotation.order = "YXZ";
       group.rotation.y = Math.PI;
       group.rotation.x = -Math.PI / 2;
-      
+
       const box = new THREE.Box3().setFromObject(obj3d);
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
-      
+
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 50 / maxDim;
       group.scale.multiplyScalar(scale);
       group.position.sub(center.multiplyScalar(scale));
       group.position.y = 0;
-      
+
       // Add high-res group to scene ALONGSIDE low-res (don't remove low-res yet)
       this.scene.add(group);
-      
+
       let i = 0;
       let frameCount = 0;
       let lastCameraPos = this.camera.position.clone();
       let lastCameraRot = { lat: this.controls.lat, lon: this.controls.lon };
-      
+
       const step = () => {
         // Check if camera is moving
-        const cameraMoving = 
+        const cameraMoving =
           this.camera.position.distanceTo(lastCameraPos) > 0.01 ||
           Math.abs(this.controls.lat - lastCameraRot.lat) > 0.5 ||
           Math.abs(this.controls.lon - lastCameraRot.lon) > 0.5 ||
-          this.controls.moveForward || this.controls.moveBackward || 
-          this.controls.moveLeft || this.controls.moveRight;
-        
+          this.controls.moveForward ||
+          this.controls.moveBackward ||
+          this.controls.moveLeft ||
+          this.controls.moveRight;
+
         // Update last positions
         lastCameraPos.copy(this.camera.position);
         lastCameraRot.lat = this.controls.lat;
         lastCameraRot.lon = this.controls.lon;
-        
+
         // Only load when camera is NOT moving
         if (!cameraMoving) {
           // Load in batches when idle
@@ -719,9 +770,9 @@ class MeshExplorer {
             }
           }
         }
-        
+
         frameCount++;
-        
+
         if (i < meshes.length) {
           requestAnimationFrame(step);
         } else {
@@ -733,7 +784,7 @@ class MeshExplorer {
           resolve();
         }
       };
-      
+
       requestAnimationFrame(step);
     });
   }
@@ -743,41 +794,41 @@ class MeshExplorer {
     if (this.currentMesh) {
       this.scene.remove(this.currentMesh);
     }
-    
+
     const box = new THREE.Box3().setFromObject(mesh);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    
-    mesh.rotation.order = 'YXZ';
+
+    mesh.rotation.order = "YXZ";
     mesh.rotation.y = Math.PI;
     mesh.rotation.x = -Math.PI / 2;
-    
+
     const maxDim = Math.max(size.x, size.y, size.z);
     const scale = 50 / maxDim;
     mesh.scale.multiplyScalar(scale);
-    
+
     mesh.position.sub(center.multiplyScalar(scale));
     mesh.position.y = 0;
-    
+
     // Optimize materials
     mesh.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.frustumCulled = true;
         child.castShadow = false;
         child.receiveShadow = false;
-        if (child.material) child.material.precision = 'mediump';
+        if (child.material) child.material.precision = "mediump";
       }
     });
-    
+
     this.scene.add(mesh);
     this.currentMesh = mesh;
-    
+
     return mesh;
   }
 
   animate() {
     requestAnimationFrame(() => this.animate());
-    
+
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
