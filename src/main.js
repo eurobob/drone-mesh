@@ -204,11 +204,15 @@ class MeshExplorer {
 
     const intersection = this.selectedSurface.intersection;
 
+    // Transform face normal to world space for classification
+    const faceWorldNormal = intersection.face.normal.clone();
+    faceWorldNormal.transformDirection(mesh.matrixWorld);
+    
     // Find all connected faces that form the same surface
     const connectedFaces = this.findConnectedSurface(
       mesh,
       intersection.faceIndex,
-      intersection.face.normal
+      faceWorldNormal
     );
     console.log("Found", connectedFaces.length, "connected faces");
 
@@ -262,10 +266,8 @@ class MeshExplorer {
     this.highlightMesh = new THREE.Mesh(geometry, highlightMaterial);
 
     // Offset the entire highlight slightly along face normal to avoid z-fighting
-    const worldNormal = intersection.face.normal.clone();
-    worldNormal.transformDirection(mesh.matrixWorld);
-    worldNormal.normalize();
-    const offset = worldNormal.multiplyScalar(0.01);
+    faceWorldNormal.normalize();
+    const offset = faceWorldNormal.multiplyScalar(0.01);
 
     // Apply offset to each vertex
     const offsetPositions = [];
@@ -297,6 +299,10 @@ class MeshExplorer {
     const toProcess = [startFaceIndex];
     const positionAttribute = mesh.geometry.getAttribute("position");
     const normalAttribute = mesh.geometry.getAttribute("normal");
+    
+    // Get the classification of the starting face
+    const startClassification = this.classifySurfaceFromNormal(targetNormal);
+    console.log("Starting surface type:", startClassification);
 
     while (toProcess.length > 0 && connectedFaces.size < maxFaces) {
       const faceIndex = toProcess.pop();
@@ -335,14 +341,20 @@ class MeshExplorer {
         const edge2 = vertices[2].clone().sub(vertices[0]);
         faceNormal = edge1.cross(edge2).normalize();
       }
+      
+      // Transform to world space for classification
+      const worldNormal = faceNormal.clone();
+      worldNormal.transformDirection(mesh.matrixWorld);
 
-      // Check if normal is similar to target
-      const dot = Math.abs(faceNormal.dot(targetNormal));
-      if (dot > 1 - normalTolerance) {
+      // Check if this face has the same classification
+      const faceClassification = this.classifySurfaceFromNormal(worldNormal);
+      
+      // Only add if same classification type (walls with walls, roofs with roofs, etc)
+      if (faceClassification === startClassification) {
         connectedFaces.add(faceIndex);
 
         // Add adjacent faces to process (simplified - just add nearby face indices)
-        for (let i = -2; i <= 2; i++) {
+        for (let i = -5; i <= 5; i++) {  // Increased range for better connectivity
           const adjacentFace = faceIndex + i;
           if (
             adjacentFace >= 0 &&
@@ -359,6 +371,20 @@ class MeshExplorer {
     }
 
     return Array.from(connectedFaces);
+  }
+  
+  classifySurfaceFromNormal(worldNormal) {
+    // Classify based on world-space normal vector
+    const upDot = worldNormal.dot(new THREE.Vector3(0, 1, 0));
+    const angle = Math.acos(Math.abs(upDot)) * (180 / Math.PI);
+
+    if (angle < 20) {
+      return upDot > 0 ? "roof-flat" : "floor";
+    } else if (angle > 70) {
+      return "wall";
+    } else {
+      return upDot > 0 ? "roof-pitched" : "slope";
+    }
   }
 
   clearSurfaceSelection() {
