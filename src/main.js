@@ -1,12 +1,33 @@
 import * as THREE from "three";
 import { FirstPersonControls } from "./FirstPersonControls.js";
 import { MeshLoader } from "./MeshLoader.js";
+import { HighResStreamer } from "./HighResStreamer.js";
 
 // Configuration toggle
 const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
 
+// The high-res model is 130 tiles, each with its own ~2048x2048 texture. Decoded
+// to GPU memory that is ~2.5 GB of VRAM all at once - far beyond what any tablet
+// or most laptops can hold, so uploading them all loses the WebGL context (black
+// tiles / blank screen / reload loop).
+//
+// Instead of a wholesale swap we stream textures by proximity (LOD): the low-res
+// preview stays as the always-resident base, and only the nearest tiles are
+// promoted to a high-res texture, capped so resident high-res VRAM stays bounded.
+// Promoted tiles are downscaled to MAX_TEXTURE_SIZE; far tiles have their high-res
+// texture disposed (VRAM freed, source image kept for cheap re-upload).
+const MAX_TEXTURE_SIZE = 1024; // per-tile high-res cap (1024^2 RGBA ~= 5.6 MB VRAM)
+const MAX_HIGH_RES_TILES = 16; // nearest N tiles that may hold a high-res texture
+const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
+
+// Bump on every meaningful change. Shown in the info panel and logged at startup
+// so it's possible to confirm the live preview is actually running current code
+// (vs a stale cached bundle).
+const BUILD_VERSION = "lod-stream-2";
+
 class MeshExplorer {
   constructor() {
+    console.log(`[drone-mesh] build ${BUILD_VERSION}`);
     this.scene = null;
     this.camera = null;
     this.renderer = null;
@@ -14,9 +35,12 @@ class MeshExplorer {
     this.meshLoader = null;
     this.currentMesh = null;
     this.lowResMesh = null;
-    this.highResMesh = null;
     this.isLoadingHighRes = false;
     this.currentFiles = null;
+
+    // High-res texture streaming (see HighResStreamer).
+    this.streamer = null;
+    this.frameCount = 0;
 
     // Surface selection
     this.raycaster = new THREE.Raycaster();
@@ -50,11 +74,36 @@ class MeshExplorer {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    // Cap pixel ratio so high-DPI mobile screens don't allocate huge
+    // framebuffers (a common cause of WebGL context loss on phones).
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const container = document.getElementById("canvas-container");
     container.appendChild(this.renderer.domElement);
+
+    // Handle WebGL context loss gracefully instead of leaving a blank screen.
+    this.contextLost = false;
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener(
+      "webglcontextlost",
+      (event) => {
+        // preventDefault lets the browser attempt to restore the context.
+        event.preventDefault();
+        this.contextLost = true;
+        console.error("WebGL context lost");
+      },
+      false
+    );
+    canvas.addEventListener(
+      "webglcontextrestored",
+      () => {
+        this.contextLost = false;
+        console.warn("WebGL context restored");
+      },
+      false
+    );
 
     this.controls = new FirstPersonControls(
       this.camera,
@@ -437,6 +486,7 @@ class MeshExplorer {
         Click + Drag - Look around
       `;
     }
+    infoDiv.innerHTML += `<br><span style="opacity:0.6;font-size:11px">build ${BUILD_VERSION}</span>`;
   }
 
   showLoading(text = "Loading mesh...") {
@@ -462,6 +512,29 @@ class MeshExplorer {
     }
   }
 
+  // Free GPU resources (geometries, materials, textures) held by an object
+  // tree. Three.js does NOT do this when you remove an object from the scene,
+  // so without it every mesh swap leaks GPU memory until the WebGL context is
+  // lost (blank screen / mobile tab reload).
+  disposeObject(obj) {
+    if (!obj) return;
+    obj.traverse((child) => {
+      if (!child.isMesh) return;
+      if (child.geometry) child.geometry.dispose();
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+      materials.forEach((material) => {
+        if (!material) return;
+        for (const key in material) {
+          const value = material[key];
+          if (value && value.isTexture) value.dispose();
+        }
+        material.dispose();
+      });
+    });
+  }
+
   async loadMeshFiles(files) {
     const startTime = performance.now();
     let lastTime = startTime;
@@ -483,6 +556,8 @@ class MeshExplorer {
 
       if (this.currentMesh) {
         this.scene.remove(this.currentMesh);
+        this.disposeObject(this.currentMesh);
+        this.currentMesh = null;
       }
       logTiming("Scene cleanup");
 
@@ -611,15 +686,26 @@ class MeshExplorer {
       this.hideLoading();
       console.log("Low-res mesh loaded and displayed");
 
-      // Start loading high-res in background
+      // Stream high-res textures by proximity. The 61 MB high-res GLB is fetched
+      // once and stripped of its textures so nothing is decoded up front; only
+      // the nearest tiles ever decode/upload a texture. This is what keeps memory
+      // bounded on tablets/phones (see HighResStreamer).
       this.showProgressiveLoader();
       this.isLoadingHighRes = true;
 
-      console.log("Starting high-res load in background...");
-      this.highResMesh = await this.meshLoader.loadFromUrl(highResUrl);
+      console.log("Starting high-res streaming...");
+      this.streamer = new HighResStreamer({
+        scene: this.scene,
+        camera: this.camera,
+        gltfLoader: this.meshLoader.loaders.gltf,
+        maxTextureSize: MAX_TEXTURE_SIZE,
+        maxHighResTiles: MAX_HIGH_RES_TILES,
+      });
+      const tileCount = await this.streamer.load(highResUrl, this.currentMesh);
+      console.log(`High-res streaming active: ${tileCount} tiles`);
 
-      // Swap to high-res
-      await this.swapToHighRes();
+      this.hideProgressiveLoader();
+      this.isLoadingHighRes = false;
     } catch (error) {
       this.hideLoading();
       this.hideProgressiveLoader();
@@ -644,8 +730,9 @@ class MeshExplorer {
       lastTime = now;
     };
 
-    if (this.currentMesh) {
+    if (this.currentMesh && this.currentMesh !== mesh) {
       this.scene.remove(this.currentMesh);
+      this.disposeObject(this.currentMesh);
     }
 
     // Calculate bounds BEFORE adding to scene
@@ -713,149 +800,22 @@ class MeshExplorer {
     return mesh;
   }
 
-  async swapToHighRes() {
-    console.log("Swapping to high-res mesh...");
-
-    // Check if high-res has many children or single mesh
-    const meshes = [];
-    this.highResMesh.traverse((child) => {
-      if (child.isMesh) meshes.push(child);
-    });
-
-    console.log(`High-res mesh has ${meshes.length} child meshes`);
-
-    // Use gradual loading for the 130 meshes
-    await this.addSceneGradually(this.highResMesh);
-
-    this.hideProgressiveLoader();
-    this.isLoadingHighRes = false;
-
-    console.log("Successfully swapped to high-res mesh");
-  }
-
-  addSceneGradually(obj3d, batchSize = 2) {
-    return new Promise((resolve) => {
-      const meshes = [];
-      obj3d.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = false;
-          child.receiveShadow = false;
-          child.frustumCulled = true;
-          if (child.material) child.material.precision = "mediump";
-          meshes.push(child);
-        }
-      });
-
-      // Apply transformations to the group
-      const group = new THREE.Group();
-      group.rotation.order = "YXZ";
-      group.rotation.y = Math.PI;
-      group.rotation.x = -Math.PI / 2;
-
-      const box = new THREE.Box3().setFromObject(obj3d);
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3());
-
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const scale = 50 / maxDim;
-      group.scale.multiplyScalar(scale);
-      group.position.sub(center.multiplyScalar(scale));
-      group.position.y = 0;
-
-      // Add high-res group to scene ALONGSIDE low-res (don't remove low-res yet)
-      this.scene.add(group);
-
-      let i = 0;
-      let frameCount = 0;
-      let lastCameraPos = this.camera.position.clone();
-      let lastCameraRot = { lat: this.controls.lat, lon: this.controls.lon };
-
-      const step = () => {
-        // Check if camera is moving
-        const cameraMoving =
-          this.camera.position.distanceTo(lastCameraPos) > 0.01 ||
-          Math.abs(this.controls.lat - lastCameraRot.lat) > 0.5 ||
-          Math.abs(this.controls.lon - lastCameraRot.lon) > 0.5 ||
-          this.controls.moveForward ||
-          this.controls.moveBackward ||
-          this.controls.moveLeft ||
-          this.controls.moveRight;
-
-        // Update last positions
-        lastCameraPos.copy(this.camera.position);
-        lastCameraRot.lat = this.controls.lat;
-        lastCameraRot.lon = this.controls.lon;
-
-        // Only load when camera is NOT moving
-        if (!cameraMoving) {
-          // Load in batches when idle
-          if (frameCount % 2 === 0) {
-            const end = Math.min(i + 3, meshes.length);
-            for (; i < end; i++) {
-              group.add(meshes[i]);
-            }
-          }
-        }
-
-        frameCount++;
-
-        if (i < meshes.length) {
-          requestAnimationFrame(step);
-        } else {
-          // Only remove low-res after ALL chunks are loaded
-          if (this.currentMesh) {
-            this.scene.remove(this.currentMesh);
-          }
-          this.currentMesh = group;
-          resolve();
-        }
-      };
-
-      requestAnimationFrame(step);
-    });
-  }
-
-  async setupMeshWithoutCamera(mesh) {
-    // Same as setupMesh but without camera positioning
-    if (this.currentMesh) {
-      this.scene.remove(this.currentMesh);
-    }
-
-    const box = new THREE.Box3().setFromObject(mesh);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-
-    mesh.rotation.order = "YXZ";
-    mesh.rotation.y = Math.PI;
-    mesh.rotation.x = -Math.PI / 2;
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = 50 / maxDim;
-    mesh.scale.multiplyScalar(scale);
-
-    mesh.position.sub(center.multiplyScalar(scale));
-    mesh.position.y = 0;
-
-    // Optimize materials
-    mesh.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        child.frustumCulled = true;
-        child.castShadow = false;
-        child.receiveShadow = false;
-        if (child.material) child.material.precision = "mediump";
-      }
-    });
-
-    this.scene.add(mesh);
-    this.currentMesh = mesh;
-
-    return mesh;
-  }
-
   animate() {
     requestAnimationFrame(() => this.animate());
 
     this.controls.update();
+
+    // Don't try to render on a lost context - it just spams GL errors until
+    // (and if) the browser restores it.
+    if (this.contextLost) return;
+
+    // Re-evaluate which tiles stream a high-res texture periodically (not every
+    // frame - it sorts all tiles) so detail follows the camera within budget.
+    this.frameCount++;
+    if (this.streamer && this.frameCount % LOD_UPDATE_INTERVAL === 0) {
+      this.streamer.update();
+    }
+
     this.renderer.render(this.scene, this.camera);
   }
 }
