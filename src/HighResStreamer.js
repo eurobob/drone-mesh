@@ -19,12 +19,13 @@ const CHUNK_JSON = 0x4e4f534a;
 const CHUNK_BIN = 0x004e4942;
 
 export class HighResStreamer {
-  constructor({ scene, camera, gltfLoader, maxTextureSize, maxHighResTiles }) {
+  constructor({ scene, camera, gltfLoader, maxTextureSize, maxHighResTiles, maxAnisotropy }) {
     this.scene = scene;
     this.camera = camera;
     this.gltfLoader = gltfLoader;
     this.maxTextureSize = maxTextureSize;
     this.maxHighResTiles = maxHighResTiles;
+    this.maxAnisotropy = maxAnisotropy || 1;
 
     this.tiles = [];
     this.group = null;
@@ -33,6 +34,21 @@ export class HighResStreamer {
     this.decoding = 0;
     this.maxConcurrentDecodes = 3;
     this.decodeCount = 0; // diagnostic: total tiles ever decoded
+
+    // Decoded images wait here and upload at most ONE per rendered frame
+    // (drainUploads, called from the main loop). Uploading several 2048²
+    // textures + mipmap generation in a single frame is what caused visible
+    // hitches during the initial sharpen-up.
+    this.uploadQueue = [];
+
+    // Review-mode overrides. focusTiles/prefetchTiles (arrays of tile indices)
+    // replace camera proximity as the "wanted" strategy: focus = the item
+    // under review, prefetch = the next item (decoded early so advancing is
+    // instant, but kept hidden by scope). scope (Set of tile indices) limits
+    // which tiles render at all — null means everything, explore behavior.
+    this.focusTiles = null;
+    this.prefetchTiles = null;
+    this.scope = null;
   }
 
   // Fetch + strip + load geometry, overlay it on the low-res base. Resolves once
@@ -91,6 +107,7 @@ export class HighResStreamer {
       if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
       mesh.geometry.boundingBox.getCenter(localCenter);
       return {
+        index: i,
         mesh,
         low: lowTiles[i] || null,
         center: localCenter.clone().applyMatrix4(mesh.matrixWorld),
@@ -107,25 +124,90 @@ export class HighResStreamer {
     return this.tiles.length;
   }
 
-  // Re-evaluate which tiles deserve a high-res texture (nearest N to the camera).
+  // Re-evaluate which tiles deserve a high-res texture. Default strategy is
+  // gaze-aware proximity; setFocus() overrides it with an explicit tile list.
   update() {
     if (!this.active || !this.tiles.length) return;
 
-    const cam = this.camera.position;
-    for (const t of this.tiles) t._distSq = t.center.distanceToSquared(cam);
-    const nearSet = new Set(
-      this.tiles
-        .slice()
-        .sort((a, b) => a._distSq - b._distSq)
-        .slice(0, this.maxHighResTiles)
-    );
+    let wantedList = [];
+    if (this.focusTiles) {
+      const take = (indices) => {
+        if (!indices) return;
+        for (const i of indices) {
+          if (wantedList.length >= this.maxHighResTiles) return;
+          const t = this.tiles[i];
+          if (t && !wantedList.includes(t)) wantedList.push(t);
+        }
+      };
+      take(this.focusTiles); // current item first — prefetch only fills leftover budget
+      take(this.prefetchTiles);
+    } else {
+      // Priority = distance to the camera OR to the point the camera is
+      // LOOKING AT (view ray ∩ ground plane, clamped). Pure camera distance
+      // fails oblique aerial views: the nearest tiles sit below/behind the
+      // camera off-screen, eating the whole budget while every tile actually
+      // in frame stays base-res (near = blurry, far = deceptively fine).
+      const cam = this.camera.position;
+      this._dir = this._dir || new THREE.Vector3();
+      this._focus = this._focus || new THREE.Vector3();
+      this.camera.getWorldDirection(this._dir);
+      const LOOKAHEAD_MAX = 160; // scene units — near-horizon gazes don't chase infinity
+      let t = this._dir.y < -0.02 ? cam.y / -this._dir.y : LOOKAHEAD_MAX;
+      t = Math.min(Math.max(t, 0), LOOKAHEAD_MAX);
+      this._focus.copy(this._dir).multiplyScalar(t).add(cam);
 
-    for (const t of this.tiles) {
-      const want = nearSet.has(t) && !!t.bytes;
-      t.wanted = want;
-      if (want && t.state === "low") this.promote(t);
-      else if (!want && t.state === "high") this.demote(t);
+      for (const tile of this.tiles) {
+        tile._score = Math.min(
+          tile.center.distanceToSquared(cam),
+          tile.center.distanceToSquared(this._focus)
+        );
+      }
+      wantedList = this.tiles
+        .slice()
+        .sort((a, b) => a._score - b._score)
+        .slice(0, this.maxHighResTiles);
     }
+
+    const wantedSet = new Set(wantedList);
+    // Promote in priority order — the 3-wide decode queue fills with the most
+    // visible tiles first instead of whatever came first in the tile array.
+    for (const tile of wantedList) {
+      if (tile.bytes && tile.state === "low") this.promote(tile);
+    }
+    for (const tile of this.tiles) {
+      tile.wanted = wantedSet.has(tile) && !!tile.bytes;
+      if (!tile.wanted && tile.state === "high") this.demote(tile);
+    }
+    this.applyVisibility();
+  }
+
+  // Wanted-strategy override. Pass null to return to camera proximity.
+  setFocus(focusIndices, prefetchIndices = null) {
+    this.focusTiles = focusIndices ? Array.from(focusIndices) : null;
+    this.prefetchTiles = prefetchIndices ? Array.from(prefetchIndices) : null;
+    this.update();
+  }
+
+  // Rendering scope. Pass a Set of tile indices to show only those tiles
+  // (low- or high-res, whichever is resident); null shows everything.
+  setScope(scopeIndices) {
+    this.scope = scopeIndices ? new Set(scopeIndices) : null;
+    this.applyVisibility();
+  }
+
+  applyVisibility() {
+    for (const t of this.tiles) this.applyTileVisibility(t);
+  }
+
+  // Single source of truth for the low/high pair: high-res mesh shows only
+  // when resident AND in scope; the low-res twin covers every other case
+  // (including prefetched-but-out-of-scope tiles, which stay decoded but
+  // hidden until the queue advances into them).
+  applyTileVisibility(t) {
+    const inScope = !this.scope || this.scope.has(t.index);
+    const showHigh = inScope && t.state === "high";
+    t.mesh.visible = showHigh;
+    if (t.low) t.low.visible = inScope && !showHigh;
   }
 
   promote(t) {
@@ -133,25 +215,14 @@ export class HighResStreamer {
     t.state = "loading";
     this.decoding++;
     this.decodeToCanvas(t.bytes, t.mime)
-      .then((canvas) => {
+      .then((image) => {
         this.decoding--;
         if (!t.wanted) {
           t.state = "low"; // camera moved away mid-decode
+          this.closeImage(image);
           return;
         }
-        const tex = new THREE.Texture(canvas);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.flipY = false; // glTF UV convention
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.generateMipmaps = true;
-        tex.needsUpdate = true;
-        t.mesh.material.map = tex;
-        t.mesh.material.needsUpdate = true;
-        t.texture = tex;
-        t.mesh.visible = true;
-        if (t.low) t.low.visible = false;
-        t.state = "high";
+        this.uploadQueue.push({ t, image });
       })
       .catch((err) => {
         this.decoding--;
@@ -160,9 +231,43 @@ export class HighResStreamer {
       });
   }
 
+  // Called once per rendered frame from the main loop: upload at most one
+  // decoded texture per frame so sharpening never stalls the camera.
+  drainUploads() {
+    while (this.uploadQueue.length) {
+      const { t, image } = this.uploadQueue.shift();
+      if (!t.wanted) {
+        t.state = "low"; // demoted while waiting in the queue
+        this.closeImage(image);
+        continue; // didn't upload anything — keep looking
+      }
+      const tex = new THREE.Texture(image);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = false; // glTF UV convention
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      t.mesh.material.map = tex;
+      t.mesh.material.needsUpdate = true;
+      t.texture = tex;
+      t.state = "high";
+      this.applyTileVisibility(t);
+      return; // one real upload per frame
+    }
+  }
+
+  closeImage(image) {
+    if (image && typeof image.close === "function") {
+      try {
+        image.close();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
   demote(t) {
-    t.mesh.visible = false;
-    if (t.low) t.low.visible = true;
     if (t.texture) {
       const img = t.texture.image;
       t.texture.dispose();
@@ -177,6 +282,7 @@ export class HighResStreamer {
     }
     if (t.mesh.material) t.mesh.material.map = null;
     t.state = "low";
+    this.applyTileVisibility(t);
   }
 
   async decodeToCanvas(bytes, mime) {
@@ -185,6 +291,7 @@ export class HighResStreamer {
     this.decodeCount++;
     const longest = Math.max(bitmap.width, bitmap.height);
     const s = longest > this.maxTextureSize ? this.maxTextureSize / longest : 1;
+    if (s === 1) return bitmap; // native size — upload the bitmap directly
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(bitmap.width * s));
     canvas.height = Math.max(1, Math.round(bitmap.height * s));

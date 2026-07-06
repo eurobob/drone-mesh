@@ -2,6 +2,11 @@ import * as THREE from "three";
 import { FirstPersonControls } from "./FirstPersonControls.js";
 import { MeshLoader } from "./MeshLoader.js";
 import { HighResStreamer } from "./HighResStreamer.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { SurfaceSelector } from "./SurfaceSelector.js";
+import { LabelManager, LABEL_CLASSES, CONFIDENCE_LEVELS } from "./Labels.js";
+import { ReviewMode } from "./ReviewMode.js";
+import { autoTag } from "./AutoTagger.js";
 
 // Configuration toggle
 const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
@@ -16,14 +21,23 @@ const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selectio
 // promoted to a high-res texture, capped so resident high-res VRAM stays bounded.
 // Promoted tiles are downscaled to MAX_TEXTURE_SIZE; far tiles have their high-res
 // texture disposed (VRAM freed, source image kept for cheap re-upload).
+// Baseline (touch devices): conservative caps that survive tablets/phones.
+// Desktops get the full-quality profile below — source tiles are 2048², so
+// capping at 1024 was silently halving detail everywhere.
 const MAX_TEXTURE_SIZE = 1024; // per-tile high-res cap (1024^2 RGBA ~= 5.6 MB VRAM)
 const MAX_HIGH_RES_TILES = 16; // nearest N tiles that may hold a high-res texture
+// ROLLED BACK to the week-proven config on every device: 16 @ 1024. The
+// higher-quality experiments (2048 textures, 32 tiles, 8x anisotropy)
+// regressed navigation on Mac. Higher settings remain reachable via
+// ?tex= and ?tiles= URL params only. Revisit as tiered gaze-bubble streaming.
+const DESKTOP_TEXTURE_SIZE = 1024;
+const DESKTOP_HIGH_RES_TILES = 16;
 const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "lod-stream-2";
+const BUILD_VERSION = "demo-3";
 
 class MeshExplorer {
   constructor() {
@@ -42,21 +56,56 @@ class MeshExplorer {
     this.streamer = null;
     this.frameCount = 0;
 
-    // Surface selection
+    // Surface selection & labeling. `pending` is the not-yet-saved selection
+    // (possibly merged from several shift-clicks); saved labels live in
+    // LabelManager. Both are created once the mesh is ready.
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
-    this.selectedSurface = null;
-    this.highlightMesh = null;
+    this.selector = null;
+    this.labels = null;
+    this.pending = null;
+    this.addMode = false;
+
+    // "explore" = free-roam + click-to-label; "review" = one queue item at a
+    // time under an orbit camera with scoped tile rendering.
+    this.mode = "explore";
+    this.orbit = null;
+    this.review = null;
 
     this.init();
     this.setupEventListeners();
     this.animate();
 
-    // Auto-load the coconut farm mesh
-    this.loadProgressiveMesh(
-      "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq",
-      "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl"
+    // Auto-load the coconut farm mesh. `?local` swaps the CDN for the copies
+    // in resources/models (gitignored; dev-server only) — disk-speed loads
+    // and offline testing. `?debug` overlays live LOD streaming stats.
+    const params = new URLSearchParams(location.search);
+    this.debugLOD = params.has("debug");
+
+    // Device-tiered streaming quality (?tex= and ?tiles= override for tuning).
+    const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    this.streamProfile = {
+      maxTextureSize:
+        parseInt(params.get("tex"), 10) ||
+        (isTouch ? MAX_TEXTURE_SIZE : DESKTOP_TEXTURE_SIZE),
+      maxHighResTiles:
+        parseInt(params.get("tiles"), 10) ||
+        (isTouch ? MAX_HIGH_RES_TILES : DESKTOP_HIGH_RES_TILES),
+    };
+    console.log(
+      `[drone-mesh] stream profile: ${this.streamProfile.maxHighResTiles} tiles @ ${this.streamProfile.maxTextureSize}px (${isTouch ? "touch" : "desktop"})`
     );
+    if (params.has("local")) {
+      this.loadProgressiveMesh(
+        "/resources/models/coconut-low.glb",
+        "/resources/models/coconut-high.glb"
+      );
+    } else {
+      this.loadProgressiveMesh(
+        "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq",
+        "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl"
+      );
+    }
   }
 
   init() {
@@ -177,12 +226,24 @@ class MeshExplorer {
 
     const canvas = this.renderer.domElement;
 
-    // Handle mouse clicks for desktop
+    // A look-drag still fires a "click" on mouseup (and isMouseDown is already
+    // false by then), which used to select a surface after every camera
+    // rotate. Track pointer travel and ignore clicks that moved.
+    let downPos = null;
+    canvas.addEventListener("mousedown", (event) => {
+      downPos = { x: event.clientX, y: event.clientY };
+    });
     canvas.addEventListener("click", (event) => {
-      if (!this.controls.isMouseDown) {
-        // Only select if not dragging
-        this.handleSurfaceSelection(event.clientX, event.clientY);
+      if (downPos) {
+        const dx = event.clientX - downPos.x;
+        const dy = event.clientY - downPos.y;
+        if (dx * dx + dy * dy > 25) return; // moved >5px: that was a look, not a click
       }
+      this.handleSurfaceSelection(
+        event.clientX,
+        event.clientY,
+        event.shiftKey || this.addMode
+      );
     });
 
     // Handle touch taps for mobile
@@ -193,7 +254,7 @@ class MeshExplorer {
         // Use timeout to distinguish tap from drag
         if (tapTimeout) clearTimeout(tapTimeout);
         tapTimeout = setTimeout(() => {
-          this.handleSurfaceSelection(touch.clientX, touch.clientY);
+          this.handleSurfaceSelection(touch.clientX, touch.clientY, this.addMode);
         }, 100);
       }
     });
@@ -204,264 +265,365 @@ class MeshExplorer {
         tapTimeout = null;
       }
     });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        if (this.mode === "review" && this.review) this.review.exit();
+        else this.cancelPendingSelection();
+        return;
+      }
+      // Desktop review shortcuts (FirstPersonControls is disabled in review,
+      // so no WASD conflicts).
+      if (this.mode === "review" && this.review && this.review.active) {
+        if (event.key === "Enter") this.review.correct();
+        else if (event.key === "s" || event.key === "S") this.review.skip();
+        else if (event.key === "f" || event.key === "F") this.review.flag();
+      }
+    });
+
+    this.initLabelUI();
   }
 
-  handleSurfaceSelection(clientX, clientY) {
-    if (!this.currentMesh) return;
+  handleSurfaceSelection(clientX, clientY, additive = false) {
+    if (this.mode !== "explore") return;
+    if (!this.currentMesh || !this.selector) return;
 
     // Convert screen coordinates to normalized device coordinates
     this.mouse.x = (clientX / window.innerWidth) * 2 - 1;
     this.mouse.y = -(clientY / window.innerHeight) * 2 + 1;
 
-    // Set up raycaster
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
-    // Find intersections
+    // Raycast the low-res mesh only. It is the canonical label substrate:
+    // its geometry never changes while high-res textures stream in and out,
+    // so face indices stay valid. (three's raycaster ignores `visible`, which
+    // is exactly what we want for tiles whose low-res twin is hidden.)
     const intersects = this.raycaster.intersectObject(this.currentMesh, true);
-
-    if (intersects.length > 0) {
-      const intersection = intersects[0];
-      this.selectSurface(intersection);
-    }
-  }
-
-  selectSurface(intersection) {
-    // Clear previous selection
-    if (this.selectedSurface) {
-      this.clearSurfaceSelection();
+    if (!intersects.length) {
+      if (!additive) this.cancelPendingSelection();
+      return;
     }
 
-    const mesh = intersection.object;
-    const face = intersection.face;
+    const result = this.selector.select(intersects[0], this.currentMesh);
+    if (!result || result.totalSelected === 0) return;
 
-    console.log("Selecting surface:", { mesh, face, intersection });
-
-    // Set selected surface first
-    this.selectedSurface = { mesh, face, intersection };
-
-    // Then highlight the surface
-    this.highlightSurface(mesh, face);
-
-    // Classify surface type
-    const surfaceType = this.classifySurface(face, intersection);
-    console.log("Selected surface type:", surfaceType);
-  }
-
-  highlightSurface(mesh, face) {
-    console.log("Highlighting surface with face:", face);
-    console.log("Intersection data:", this.selectedSurface.intersection);
-
-    const intersection = this.selectedSurface.intersection;
-
-    // Transform face normal to world space for classification
-    const faceWorldNormal = intersection.face.normal.clone();
-    faceWorldNormal.transformDirection(mesh.matrixWorld);
-    
-    // Find all connected faces that form the same surface
-    const connectedFaces = this.findConnectedSurface(
-      mesh,
-      intersection.faceIndex,
-      faceWorldNormal
-    );
-    console.log("Found", connectedFaces.length, "connected faces");
-
-    // Create geometry from all connected faces
-    const geometry = new THREE.BufferGeometry();
-    const positions = [];
-    const positionAttribute = mesh.geometry.getAttribute("position");
-
-    connectedFaces.forEach((faceIndex) => {
-      if (mesh.geometry.index) {
-        // Indexed geometry
-        const indices = mesh.geometry.index.array;
-
-        for (let i = 0; i < 3; i++) {
-          const vertexIndex = indices[faceIndex * 3 + i];
-
-          // Get vertex position in world space
-          const vertex = new THREE.Vector3();
-          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
-          vertex.applyMatrix4(mesh.matrixWorld);
-
-          positions.push(vertex.x, vertex.y, vertex.z);
+    if (additive && this.pending) {
+      for (const [mesh, faces] of result.selected) {
+        let set = this.pending.selected.get(mesh);
+        if (!set) {
+          set = new Set();
+          this.pending.selected.set(mesh, set);
         }
-      } else {
-        // Non-indexed geometry
-        for (let i = 0; i < 3; i++) {
-          const vertexIndex = faceIndex * 3 + i;
-
-          // Get vertex position in world space
-          const vertex = new THREE.Vector3();
-          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
-          vertex.applyMatrix4(mesh.matrixWorld);
-
-          positions.push(vertex.x, vertex.y, vertex.z);
-        }
+        for (const f of faces) set.add(f);
       }
-    });
+      this.pending.clicks++;
+    } else {
+      this.pending = {
+        selected: result.selected,
+        targetClass: result.targetClass,
+        clicks: 1,
+      };
+    }
 
-    geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(positions, 3)
-    );
+    this.pending.faceCount = 0;
+    for (const set of this.pending.selected.values()) {
+      this.pending.faceCount += set.size;
+    }
+    this.pending.suggested = this.labels
+      ? this.labels.suggestFor(this.pending)
+      : "other";
 
-    const highlightMaterial = new THREE.MeshBasicMaterial({
-      color: 0xff6b35,
-      transparent: true,
-      opacity: 0.7,
-      side: THREE.DoubleSide,
-    });
+    this.selector.showFaces(this.pending.selected);
+    this.showLabelPanel();
+  }
 
-    this.highlightMesh = new THREE.Mesh(geometry, highlightMaterial);
+  cancelPendingSelection() {
+    this.pending = null;
+    if (this.selector) this.selector.clearHighlight();
+    this.setAddMode(false);
+    if (this.ui) this.ui.panel.classList.remove("active");
+  }
 
-    // Offset the entire highlight slightly along face normal to avoid z-fighting
-    faceWorldNormal.normalize();
-    const offset = faceWorldNormal.multiplyScalar(0.01);
+  // Live streamer stats (enabled with ?debug): proves LOD promotion/demotion
+  // is actually happening and that resident high-res stays within budget.
+  updateLODDebug() {
+    let el = document.getElementById("lod-debug");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "lod-debug";
+      el.style.cssText =
+        "position:fixed;bottom:4px;left:4px;z-index:2000;pointer-events:none;" +
+        "font:10px/1.4 monospace;color:#0f0;background:rgba(0,0,0,.65);" +
+        "padding:3px 6px;border-radius:4px;white-space:pre";
+      document.body.appendChild(el);
+    }
+    const tiles = this.streamer.tiles;
+    let high = 0;
+    let loading = 0;
+    let visHigh = 0;
+    for (const t of tiles) {
+      if (t.state === "high") high++;
+      if (t.state === "loading") loading++;
+      if (t.mesh.visible) visHigh++;
+    }
+    const mode = this.streamer.focusTiles ? "FOCUS(review)" : "proximity";
+    el.textContent =
+      `LOD ${mode} · ${high}/${this.streamer.maxHighResTiles} high resident` +
+      ` (${visHigh} shown) · ${loading} decoding · ${this.streamer.decodeCount} lifetime decodes`;
+  }
 
-    // Apply offset to each vertex
-    const offsetPositions = [];
-    for (let i = 0; i < positions.length; i += 3) {
-      offsetPositions.push(
-        positions[i] + offset.x,
-        positions[i + 1] + offset.y,
-        positions[i + 2] + offset.z
+  // --- auto-tagging ------------------------------------------------------------
+
+  // Segment + classify the whole map; results become red "flagged" proposals
+  // feeding the review queue. Stored labels are the cache — reloads restore
+  // them instantly; re-running clears previous auto labels first.
+  async runAutoTag() {
+    if (!this.labels || !this.selector || this.mode !== "explore" || this.autoTagging) return;
+    this.autoTagging = true;
+    this.cancelPendingSelection();
+    this.showLoading("Auto-tagging surfaces...");
+    const progressText = document.getElementById("loading-progress");
+    try {
+      const removed = this.labels.removeAuto();
+      if (removed) console.log(`auto-tag: cleared ${removed} previous proposals`);
+      const t0 = performance.now();
+      const res = await autoTag({
+        selector: this.selector,
+        labels: this.labels,
+        root: this.currentMesh,
+        onProgress: (done, total, created) => {
+          progressText.textContent = `${Math.round((done / total) * 100)}% · ${created} surfaces`;
+        },
+      });
+      console.log(
+        `auto-tag: ${res.created} proposals from ${res.regions} regions in ${(
+          (performance.now() - t0) / 1000
+        ).toFixed(1)}s`
       );
+    } catch (err) {
+      console.error("auto-tag failed", err);
+      alert(`Auto-tag failed: ${err.message}`);
+    } finally {
+      this.hideLoading();
+      this.autoTagging = false;
+      this.renderLabelList();
     }
-
-    this.highlightMesh.geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(offsetPositions, 3)
-    );
-
-    this.scene.add(this.highlightMesh);
-    console.log("Added surface highlight with", connectedFaces.length, "faces");
   }
 
-  findConnectedSurface(
-    mesh,
-    startFaceIndex,
-    targetNormal,
-    normalTolerance = 0.1,
-    maxFaces = 200
-  ) {
-    const connectedFaces = new Set();
-    const toProcess = [startFaceIndex];
-    const positionAttribute = mesh.geometry.getAttribute("position");
-    const normalAttribute = mesh.geometry.getAttribute("normal");
-    
-    // Get the classification of the starting face
-    const startClassification = this.classifySurfaceFromNormal(targetNormal);
-    console.log("Starting surface type:", startClassification);
+  // --- review mode -----------------------------------------------------------
 
-    while (toProcess.length > 0 && connectedFaces.size < maxFaces) {
-      const faceIndex = toProcess.pop();
+  enterReviewMode() {
+    if (this.mode === "review") return;
+    if (!this.labels || !this.labels.list.length) return;
 
-      if (connectedFaces.has(faceIndex)) continue;
+    this.cancelPendingSelection();
 
-      // Get face normal
-      let faceNormal;
-      if (normalAttribute) {
-        // Average the vertex normals
-        faceNormal = new THREE.Vector3();
-        for (let i = 0; i < 3; i++) {
-          const vertexIndex = mesh.geometry.index
-            ? mesh.geometry.index.array[faceIndex * 3 + i]
-            : faceIndex * 3 + i;
+    if (!this.orbit) {
+      this.orbit = new OrbitControls(this.camera, this.renderer.domElement);
+      this.orbit.enableDamping = true;
+      this.orbit.dampingFactor = 0.12;
+      this.orbit.maxPolarAngle = Math.PI * 0.49; // stay above the horizon
+      this.orbit.enabled = false;
+    }
+    if (!this.review) {
+      this.review = new ReviewMode({
+        camera: this.camera,
+        orbit: this.orbit,
+        labels: this.labels,
+        streamer: this.streamer,
+        ui: {
+          hud: document.getElementById("review-hud"),
+          progress: document.getElementById("rh-progress"),
+          klass: document.getElementById("rh-class"),
+          meta: document.getElementById("rh-meta"),
+          exit: document.getElementById("rh-exit"),
+          actions: document.getElementById("review-actions"),
+          reclass: document.getElementById("ra-reclass"),
+          verbs: document.getElementById("ra-verbs"),
+          correct: document.getElementById("ra-correct"),
+          wrong: document.getElementById("ra-wrong"),
+          flag: document.getElementById("ra-flag"),
+          skip: document.getElementById("ra-skip"),
+        },
+        onChange: () => this.renderLabelList(),
+        onExit: () => this.handleReviewExit(),
+      });
+    }
+    // Refresh refs — labels is rebuilt per map, streamer arrives after load.
+    this.review.labels = this.labels;
+    this.review.streamer = this.streamer;
 
-          const normal = new THREE.Vector3();
-          normal.fromBufferAttribute(normalAttribute, vertexIndex);
-          faceNormal.add(normal);
-        }
-        faceNormal.normalize();
-      } else {
-        // Calculate face normal from vertices
-        const vertices = [];
-        for (let i = 0; i < 3; i++) {
-          const vertexIndex = mesh.geometry.index
-            ? mesh.geometry.index.array[faceIndex * 3 + i]
-            : faceIndex * 3 + i;
+    this.mode = "review";
+    this.controls.enabled = false;
+    this.orbit.enabled = true;
+    // Seed the orbit target with the current view direction so the first
+    // frame doesn't snap toward a stale target.
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    this.orbit.target.copy(this.camera.position).addScaledVector(dir, 10);
 
-          const vertex = new THREE.Vector3();
-          vertex.fromBufferAttribute(positionAttribute, vertexIndex);
-          vertices.push(vertex);
-        }
+    // The HUD owns the screen: labels card and controls-help make way.
+    this.ui.card.classList.remove("active");
+    document.getElementById("info").style.display = "none";
 
-        const edge1 = vertices[1].clone().sub(vertices[0]);
-        const edge2 = vertices[2].clone().sub(vertices[0]);
-        faceNormal = edge1.cross(edge2).normalize();
+    if (!this.review.enter()) this.handleReviewExit();
+  }
+
+  handleReviewExit() {
+    this.mode = "explore";
+    if (this.orbit) this.orbit.enabled = false;
+    this.controls.enabled = true;
+    this.controls.syncFromCamera();
+    document.getElementById("info").style.display = "";
+    this.renderLabelList();
+  }
+
+  setAddMode(on) {
+    this.addMode = on;
+    if (this.ui) this.ui.addToggle.classList.toggle("active", on);
+  }
+
+  // --- labeling UI -----------------------------------------------------------
+
+  initLabelUI() {
+    this.ui = {
+      panel: document.getElementById("label-panel"),
+      summary: document.getElementById("lp-summary"),
+      classes: document.getElementById("lp-classes"),
+      conf: document.getElementById("lp-conf"),
+      addToggle: document.getElementById("lp-add"),
+      save: document.getElementById("lp-save"),
+      cancel: document.getElementById("lp-cancel"),
+      card: document.getElementById("labels-card"),
+      count: document.getElementById("labels-count"),
+      list: document.getElementById("labels-list"),
+      export: document.getElementById("labels-export"),
+      clear: document.getElementById("labels-clear"),
+      reviewBtn: document.getElementById("labels-review"),
+      autoBtn: document.getElementById("labels-auto"),
+    };
+    this.pickedClass = null;
+    this.pickedConfidence = "confirmed";
+
+    for (const cls of LABEL_CLASSES) {
+      const b = document.createElement("button");
+      b.className = "class-btn";
+      b.dataset.cls = cls.id;
+      b.style.setProperty("--chip", cls.color);
+      b.textContent = cls.name;
+      b.addEventListener("click", () => this.pickClass(cls.id));
+      this.ui.classes.appendChild(b);
+    }
+
+    for (const conf of CONFIDENCE_LEVELS) {
+      const b = document.createElement("button");
+      b.className = "conf-btn";
+      b.dataset.conf = conf.id;
+      b.style.setProperty("--chip", conf.color);
+      b.textContent = conf.name;
+      b.addEventListener("click", () => this.pickConfidence(conf.id));
+      this.ui.conf.appendChild(b);
+    }
+
+    this.ui.addToggle.addEventListener("click", () => this.setAddMode(!this.addMode));
+    this.ui.save.addEventListener("click", () => this.saveLabel());
+    this.ui.cancel.addEventListener("click", () => this.cancelPendingSelection());
+    this.ui.reviewBtn.addEventListener("click", () => this.enterReviewMode());
+    this.ui.autoBtn.addEventListener("click", () => this.runAutoTag());
+    this.ui.export.addEventListener("click", () => {
+      if (this.labels) this.labels.exportDownload();
+    });
+    this.ui.clear.addEventListener("click", () => {
+      if (this.labels && confirm("Delete all labels for this map?")) {
+        this.labels.clearAll();
+        this.renderLabelList();
       }
-      
-      // Transform to world space for classification
-      const worldNormal = faceNormal.clone();
-      worldNormal.transformDirection(mesh.matrixWorld);
-
-      // Check if this face has the same classification
-      const faceClassification = this.classifySurfaceFromNormal(worldNormal);
-      
-      // Only add if same classification type (walls with walls, roofs with roofs, etc)
-      if (faceClassification === startClassification) {
-        connectedFaces.add(faceIndex);
-
-        // Add adjacent faces to process (simplified - just add nearby face indices)
-        for (let i = -5; i <= 5; i++) {  // Increased range for better connectivity
-          const adjacentFace = faceIndex + i;
-          if (
-            adjacentFace >= 0 &&
-            adjacentFace <
-              (mesh.geometry.index
-                ? mesh.geometry.index.array.length / 3
-                : positionAttribute.count / 3) &&
-            !connectedFaces.has(adjacentFace)
-          ) {
-            toProcess.push(adjacentFace);
-          }
-        }
+    });
+    // Delegated delete buttons — the list is re-rendered wholesale.
+    this.ui.list.addEventListener("click", (event) => {
+      const id = event.target?.dataset?.del;
+      if (id && this.labels) {
+        this.labels.remove(id);
+        this.renderLabelList();
       }
-    }
-
-    return Array.from(connectedFaces);
+    });
   }
-  
-  classifySurfaceFromNormal(worldNormal) {
-    // Classify based on world-space normal vector
-    const upDot = worldNormal.dot(new THREE.Vector3(0, 1, 0));
-    const angle = Math.acos(Math.abs(upDot)) * (180 / Math.PI);
 
-    if (angle < 20) {
-      return upDot > 0 ? "roof-flat" : "floor";
-    } else if (angle > 70) {
-      return "wall";
-    } else {
-      return upDot > 0 ? "roof-pitched" : "slope";
+  pickClass(id) {
+    this.pickedClass = id;
+    for (const b of this.ui.classes.children) {
+      b.classList.toggle("active", b.dataset.cls === id);
     }
   }
 
-  clearSurfaceSelection() {
-    if (this.highlightMesh) {
-      this.scene.remove(this.highlightMesh);
-      this.highlightMesh.geometry.dispose();
-      this.highlightMesh.material.dispose();
-      this.highlightMesh = null;
+  pickConfidence(id) {
+    this.pickedConfidence = id;
+    for (const b of this.ui.conf.children) {
+      b.classList.toggle("active", b.dataset.conf === id);
     }
-    this.selectedSurface = null;
   }
 
-  classifySurface(face, intersection) {
-    // Get face normal in world coordinates
-    const normal = face.normal.clone();
-    normal.transformDirection(intersection.object.matrixWorld);
-
-    // Classify based on normal vector
-    const upDot = normal.dot(new THREE.Vector3(0, 1, 0));
-    const angle = Math.acos(Math.abs(upDot)) * (180 / Math.PI);
-
-    if (angle < 20) {
-      return upDot > 0 ? "roof-flat" : "floor";
-    } else if (angle > 70) {
-      return "wall";
-    } else {
-      return upDot > 0 ? "roof-pitched" : "slope";
+  showLabelPanel() {
+    if (!this.ui || !this.pending) return;
+    const p = this.pending;
+    const tiles = p.selected.size;
+    this.ui.summary.textContent =
+      `${p.faceCount.toLocaleString()} faces · ${tiles} tile${tiles === 1 ? "" : "s"}` +
+      (p.clicks > 1 ? ` · ${p.clicks} clicks` : "") +
+      ` · suggested: ${this.labels ? this.labels.className(p.suggested) : p.suggested}`;
+    // Preselect the suggestion on a fresh selection; keep the user's picks
+    // while they extend with shift-click / add mode.
+    if (p.clicks === 1) {
+      this.pickClass(p.suggested);
+      this.pickConfidence("confirmed");
     }
+    this.ui.panel.classList.add("active");
+  }
+
+  saveLabel() {
+    if (!this.pending || !this.labels || !this.pickedClass) return;
+    this.labels.add({
+      selected: this.pending.selected,
+      classId: this.pickedClass,
+      confidence: this.pickedConfidence,
+      suggested: this.pending.suggested,
+      targetClass: this.pending.targetClass,
+    });
+    this.cancelPendingSelection();
+    this.renderLabelList();
+  }
+
+  renderLabelList() {
+    if (!this.ui || !this.labels) return;
+    if (this.mode === "review") return; // HUD owns the screen; re-rendered on exit
+    this.ui.card.classList.add("active");
+    const labels = this.labels.list;
+    this.ui.count.textContent = String(labels.length);
+    // Keep the Review entry point visible even with nothing to review —
+    // hiding it entirely made the mode undiscoverable.
+    this.ui.reviewBtn.disabled = !labels.length;
+    this.ui.reviewBtn.title = labels.length
+      ? "Review saved labels one at a time"
+      : "Save at least one label first";
+    const MAX_ROWS = 120; // auto-tagging can create hundreds
+    this.ui.list.innerHTML =
+      labels
+        .slice(0, MAX_ROWS)
+        .map((l) => {
+          const cls = LABEL_CLASSES.find((c) => c.id === l.class);
+          const conf = CONFIDENCE_LEVELS.find((c) => c.id === l.confidence);
+          return `<div class="label-row">
+          <span class="dot" style="background:${cls ? cls.color : "#fff"}"></span>
+          <span class="label-name">${cls ? cls.name : l.class}${l.source === "auto" ? " <span class='auto-chip'>auto</span>" : ""}</span>
+          <span class="label-meta">${l.faceCount.toLocaleString()} faces</span>
+          <span class="dot conf" title="${conf ? conf.name : ""}" style="background:${conf ? conf.color : "#fff"}"></span>
+          <button class="row-del" data-del="${l.id}" title="Delete">×</button>
+        </div>`;
+        })
+        .join("") +
+      (labels.length > MAX_ROWS
+        ? `<div class="label-row" style="opacity:.6">…and ${labels.length - MAX_ROWS} more</div>`
+        : "");
   }
 
   updateControlsInfo() {
@@ -476,14 +638,16 @@ class MeshExplorer {
         <strong>Touch Controls:</strong><br>
         1 finger - Look around<br>
         2 finger pinch - Move forward/back<br>
-        3 finger drag - Pan left/right/up/down
+        3 finger drag - Pan left/right/up/down<br>
+        Tap - Select surface ("+ Add" extends)
       `;
     } else {
       infoDiv.innerHTML = `
         <strong>Desktop Controls:</strong><br>
         WASD - Move<br>
         Shift - Fast mode<br>
-        Click + Drag - Look around
+        Click + Drag - Look around<br>
+        Click - Select surface · Shift+Click - Add · Esc - Cancel
       `;
     }
     infoDiv.innerHTML += `<br><span style="opacity:0.6;font-size:11px">build ${BUILD_VERSION}</span>`;
@@ -686,6 +850,23 @@ class MeshExplorer {
       this.hideLoading();
       console.log("Low-res mesh loaded and displayed");
 
+      // Selection + labels operate on the low-res mesh (stable geometry —
+      // high-res streaming only swaps textures/visibility, so face indices
+      // stay valid for stored labels).
+      this.selector = new SurfaceSelector(this.scene);
+      this.labels = new LabelManager({
+        scene: this.scene,
+        root: this.currentMesh,
+        mapKey: lowResUrl,
+      });
+      const restored = this.labels.restore();
+      if (restored) console.log(`Restored ${restored} saved labels`);
+      this.renderLabelList();
+
+      // NO automatic pre-warm: the adjacency build (incl. one long synchronous
+      // global-graph merge) was stealing frames right after load, while users
+      // fly. First selection click pays it instead — user is stationary then.
+
       // Stream high-res textures by proximity. The 61 MB high-res GLB is fetched
       // once and stripped of its textures so nothing is decoded up front; only
       // the nearest tiles ever decode/upload a texture. This is what keeps memory
@@ -698,11 +879,20 @@ class MeshExplorer {
         scene: this.scene,
         camera: this.camera,
         gltfLoader: this.meshLoader.loaders.gltf,
-        maxTextureSize: MAX_TEXTURE_SIZE,
-        maxHighResTiles: MAX_HIGH_RES_TILES,
+        maxTextureSize: this.streamProfile.maxTextureSize,
+        maxHighResTiles: this.streamProfile.maxHighResTiles,
+        maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy(),
       });
       const tileCount = await this.streamer.load(highResUrl, this.currentMesh);
       console.log(`High-res streaming active: ${tileCount} tiles`);
+
+      // If review mode started before the high-res GLB arrived, hand it the
+      // streamer and point the texture focus at the current item.
+      if (this.review) {
+        this.review.streamer = this.streamer;
+        const item = this.review.cur();
+        if (this.review.active && item) this.review.applyFocus(item);
+      }
 
       this.hideProgressiveLoader();
       this.isLoadingHighRes = false;
@@ -803,7 +993,11 @@ class MeshExplorer {
   animate() {
     requestAnimationFrame(() => this.animate());
 
-    this.controls.update();
+    if (this.mode === "review" && this.review) {
+      this.review.updateFrame(); // tween + orbit damping
+    } else {
+      this.controls.update();
+    }
 
     // Don't try to render on a lost context - it just spams GL errors until
     // (and if) the browser restores it.
@@ -811,9 +1005,14 @@ class MeshExplorer {
 
     // Re-evaluate which tiles stream a high-res texture periodically (not every
     // frame - it sorts all tiles) so detail follows the camera within budget.
+    // Uploads drain one-per-frame so they never stack up into a hitch.
     this.frameCount++;
-    if (this.streamer && this.frameCount % LOD_UPDATE_INTERVAL === 0) {
-      this.streamer.update();
+    if (this.streamer) {
+      this.streamer.drainUploads();
+      if (this.frameCount % LOD_UPDATE_INTERVAL === 0) {
+        this.streamer.update();
+        if (this.debugLOD) this.updateLODDebug();
+      }
     }
 
     this.renderer.render(this.scene, this.camera);

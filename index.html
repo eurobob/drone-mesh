@@ -5,14 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Drone Mesh Explorer</title>
   <style>
+    html, body {
+      height: 100%;
+    }
     body {
       margin: 0;
       font-family: Arial, sans-serif;
+      /* position:fixed is the reliable iOS recipe: absolutely no page
+         scrolling or rubber-banding, ever — the app owns all gestures. */
+      position: fixed;
+      inset: 0;
+      width: 100%;
       overflow: hidden;
+      overscroll-behavior: none;
     }
     #canvas-container {
       width: 100vw;
       height: 100vh;
+      height: 100dvh; /* track the real visible viewport on mobile */
+      touch-action: none;
     }
     #info {
       position: absolute;
@@ -90,6 +101,199 @@
       0%, 100% { opacity: 0.3; transform: scale(0.8); }
       50% { opacity: 1; transform: scale(1.2); }
     }
+
+    /* --- labeling UI --- */
+    #label-panel {
+      display: none;
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(92vw, 560px);
+      background: rgba(0, 0, 0, 0.75);
+      color: white;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+    #label-panel.active { display: block; }
+    #lp-summary { opacity: 0.85; margin-bottom: 8px; }
+    .lp-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .lp-row + .lp-row { margin-top: 8px; }
+    .lp-spacer { flex: 1; }
+    .class-btn, .conf-btn, .ghost-btn, .primary-btn {
+      font-size: 12px;
+      color: white;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 6px;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .class-btn::before, .conf-btn::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--chip, #fff);
+      margin-right: 6px;
+    }
+    .class-btn.active, .conf-btn.active {
+      background: rgba(255, 255, 255, 0.25);
+      border-color: var(--chip, #fff);
+    }
+    #lp-add.active {
+      background: rgba(52, 152, 219, 0.45);
+      border-color: #3498db;
+    }
+    .primary-btn {
+      background: #3498db;
+      border-color: #3498db;
+      font-weight: bold;
+    }
+    #labels-card {
+      display: none;
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: min(80vw, 260px);
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      border-radius: 8px;
+      font-size: 12px;
+      padding: 8px 10px;
+    }
+    #labels-card.active { display: block; }
+    .lc-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    #labels-list { max-height: 40vh; overflow-y: auto; }
+    .label-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .label-name { flex: 1; }
+    .label-meta { opacity: 0.6; }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex: none;
+    }
+    .row-del {
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .row-del:hover { color: #e74c3c; }
+    .auto-chip {
+      font-size: 9px;
+      opacity: 0.65;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 3px;
+      padding: 0 3px;
+      vertical-align: 1px;
+    }
+
+    /* --- compact mobile layout: info + labels card share the top row --- */
+    @media (max-width: 640px) {
+      #info {
+        font-size: 10px;
+        padding: 6px 8px;
+        max-width: 42vw;
+        opacity: 0.85;
+      }
+      #labels-card {
+        width: auto;
+        max-width: 54vw;
+        font-size: 11px;
+        padding: 6px 8px;
+      }
+      #labels-list { max-height: 28vh; }
+      .class-btn, .conf-btn, .ghost-btn, .primary-btn {
+        padding: 6px 8px;
+        font-size: 11px;
+      }
+      /* review verbs stay thumb-sized */
+      #review-actions .primary-btn,
+      #review-actions .ghost-btn {
+        padding: 10px 12px;
+        font-size: 12px;
+      }
+      #label-panel {
+        bottom: 8px;
+        padding: 8px;
+        font-size: 12px;
+      }
+      #review-hud {
+        top: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      #review-actions { bottom: 8px; padding: 8px; }
+    }
+
+    /* --- review mode --- */
+    #review-hud {
+      display: none;
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(94vw, 560px);
+      background: rgba(0, 0, 0, 0.75);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      box-sizing: border-box;
+      align-items: center;
+      gap: 8px;
+    }
+    #review-hud.active { display: flex; }
+    #rh-class { font-weight: bold; }
+    #rh-meta { opacity: 0.7; }
+    #review-actions {
+      display: none;
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(94vw, 560px);
+      background: rgba(0, 0, 0, 0.75);
+      color: white;
+      padding: 10px 12px;
+      border-radius: 10px;
+      box-sizing: border-box;
+    }
+    #review-actions.active { display: block; }
+    #review-actions .primary-btn,
+    #review-actions .ghost-btn {
+      padding: 10px 14px; /* thumb-sized */
+    }
+    #ra-reclass { display: none; margin-bottom: 8px; }
+    #ra-reclass.active { display: flex; }
   </style>
 </head>
 <body>
@@ -110,6 +314,46 @@
     <div class="pulse-dot"></div>
     <div class="pulse-dot"></div>
     <span style="color: white; font-size: 12px; margin-left: 5px;">Enhancing quality...</span>
+  </div>
+  <div id="label-panel">
+    <div id="lp-summary"></div>
+    <div id="lp-classes" class="lp-row"></div>
+    <div class="lp-row">
+      <div id="lp-conf" class="lp-row"></div>
+      <span class="lp-spacer"></span>
+      <button id="lp-add" class="ghost-btn" title="Merge more surfaces into this selection (or Shift+Click)">+ Add</button>
+      <button id="lp-cancel" class="ghost-btn">Cancel</button>
+      <button id="lp-save" class="primary-btn">Save label</button>
+    </div>
+  </div>
+  <div id="labels-card">
+    <div class="lc-head">
+      <strong>Labels</strong>
+      <span id="labels-count">0</span>
+      <span class="lp-spacer"></span>
+      <button id="labels-auto" class="ghost-btn" title="Segment and classify the whole map as review proposals">✨ Auto-tag</button>
+      <button id="labels-review" class="ghost-btn">▶ Review</button>
+      <button id="labels-export" class="ghost-btn">Export</button>
+      <button id="labels-clear" class="ghost-btn">Clear</button>
+    </div>
+    <div id="labels-list"></div>
+  </div>
+  <div id="review-hud">
+    <span id="rh-progress"></span>
+    <span id="rh-class"></span>
+    <span id="rh-meta"></span>
+    <span class="lp-spacer"></span>
+    <button id="rh-exit" class="ghost-btn">Exit</button>
+  </div>
+  <div id="review-actions">
+    <div id="ra-reclass" class="lp-row"></div>
+    <div id="ra-verbs" class="lp-row">
+      <button id="ra-correct" class="primary-btn">✓ Correct</button>
+      <button id="ra-wrong" class="ghost-btn">Wrong class</button>
+      <button id="ra-flag" class="ghost-btn">⚑ Flag</button>
+      <span class="lp-spacer"></span>
+      <button id="ra-skip" class="ghost-btn">Skip →</button>
+    </div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

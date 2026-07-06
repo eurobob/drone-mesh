@@ -5,6 +5,10 @@ export class FirstPersonControls {
     this.camera = camera;
     this.domElement = domElement;
 
+    // When false (review mode drives the camera via OrbitControls) all input
+    // is ignored and update() is a no-op that keeps prevTime fresh.
+    this.enabled = true;
+
     this.baseMoveSpeed = 1.5; // Slower base speed
     this.fastMoveSpeed = 10; // Fast mode speed
     this.movementSpeed = this.baseMoveSpeed;
@@ -53,6 +57,7 @@ export class FirstPersonControls {
   }
 
   onKeyDown(event) {
+    if (!this.enabled) return;
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -79,6 +84,7 @@ export class FirstPersonControls {
   }
 
   onKeyUp(event) {
+    if (!this.enabled) return;
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -105,6 +111,7 @@ export class FirstPersonControls {
   }
 
   onMouseMove(event) {
+    if (!this.enabled) return;
     if (this.isMouseDown) {
       const deltaX = event.clientX - this.mouseX;
       const deltaY = event.clientY - this.mouseY;
@@ -120,6 +127,7 @@ export class FirstPersonControls {
   }
 
   onMouseDown(event) {
+    if (!this.enabled) return;
     if (event.button === 0) {
       this.isMouseDown = true;
       this.mouseX = event.clientX;
@@ -134,6 +142,7 @@ export class FirstPersonControls {
   }
 
   onTouchStart(event) {
+    if (!this.enabled) return;
     event.preventDefault();
 
     for (let i = 0; i < event.changedTouches.length; i++) {
@@ -162,6 +171,7 @@ export class FirstPersonControls {
   }
 
   onTouchMove(event) {
+    if (!this.enabled) return;
     event.preventDefault();
 
     for (let i = 0; i < event.changedTouches.length; i++) {
@@ -240,6 +250,7 @@ export class FirstPersonControls {
   }
 
   onTouchEnd(event) {
+    if (!this.enabled) return;
     event.preventDefault();
 
     for (let i = 0; i < event.changedTouches.length; i++) {
@@ -256,6 +267,11 @@ export class FirstPersonControls {
   }
 
   update() {
+    if (!this.enabled) {
+      // Keep the clock fresh so re-enabling doesn't integrate a huge delta.
+      this.prevTime = performance.now();
+      return;
+    }
     const time = performance.now();
     const delta = (time - this.prevTime) / 1000;
 
@@ -301,5 +317,21 @@ export class FirstPersonControls {
     this.lat = 0;
     this.lon = 0;
     this.velocity.set(0, 0, 0);
+  }
+
+  // Adopt whatever orientation the camera currently has (another controller
+  // may have moved it) so re-enabling doesn't snap the view back. Inverse of
+  // the lookAt math in update().
+  syncFromCamera() {
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    const phi = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+    this.lat = 90 - THREE.MathUtils.radToDeg(phi);
+    this.lon = THREE.MathUtils.radToDeg(Math.atan2(dir.z, dir.x));
+    this.velocity.set(0, 0, 0);
+    this.moveForward = false;
+    this.moveBackward = false;
+    this.moveLeft = false;
+    this.moveRight = false;
   }
 }
