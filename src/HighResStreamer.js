@@ -18,14 +18,42 @@ const GLB_MAGIC = 0x46546c67;
 const CHUNK_JSON = 0x4e4f534a;
 const CHUNK_BIN = 0x004e4942;
 
+// Tiered gaze-bubble streaming: tiles inside a small radius of the gaze
+// point (view ray ∩ ground plane) or the camera get NATIVE resolution, a
+// wider ring gets RING resolution, everything else stays on the resident
+// base textures. Radii scale with the map's tile pitch; resident tiles use
+// enlarged radii (hysteresis) so ring boundaries don't flap while flying.
+// Native uploads are therefore few and land exactly where the user looks —
+// high quality AND smooth navigation, not one or the other.
+// Margins are measured from the gaze point / camera to each tile's SAMPLED
+// GEOMETRY (a few dozen face centroids per tile). ODM "tiles" are
+// texture-atlas charts whose faces can be scattered across the whole map,
+// so both center-distance and bounding-sphere metrics degenerate (every
+// bounding sphere covers everything → all scores tie → the same tiles stay
+// resident forever). Sampled centroids measure where the tile actually IS.
+const SAMPLES_PER_TILE = 24;
+const NATIVE_MARGIN_PITCH = 0.9; // native tier within this distance of tile geometry
+const RING_MARGIN_PITCH = 2.8; // ring tier margin, in tile pitches
+const HYSTERESIS = 1.35; // resident tiles cling to their tier this much longer
+
 export class HighResStreamer {
-  constructor({ scene, camera, gltfLoader, maxTextureSize, maxHighResTiles, maxAnisotropy }) {
+  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap }) {
     this.scene = scene;
     this.camera = camera;
     this.gltfLoader = gltfLoader;
-    this.maxTextureSize = maxTextureSize;
-    this.maxHighResTiles = maxHighResTiles;
-    this.maxAnisotropy = maxAnisotropy || 1;
+    this.nativeSize = nativeSize; // texture size inside the gaze bubble
+    this.ringSize = ringSize; // texture size in the surrounding ring
+    this.nativeCap = nativeCap; // max tiles at native size
+    this.totalCap = totalCap; // max resident high-res tiles overall
+    this.tilePitch = 5; // measured in load(); fallback for injected tiles
+
+    // Whether tiles are spatially localized. ODM atlas pages are usually NOT
+    // — each "tile" scatters faces across the entire map (measured: every
+    // tile bbox spans the whole site), which makes any spatial tile
+    // selection meaningless. In that case the only correct strategy is
+    // uniform residency at a budgeted size; the gaze bubble applies only to
+    // genuinely spatial tilings (e.g. future re-tiled/3D-Tiles pipelines).
+    this.spatialTiling = true; // measured in load(); tests may override
 
     this.tiles = [];
     this.group = null;
@@ -100,6 +128,26 @@ export class HighResStreamer {
       });
     }
 
+    // World-space face centroids sampled evenly across a tile's index — the
+    // tile's true spatial footprint, robust to scattered atlas charts.
+    const sampleFaceCentroids = (mesh, count) => {
+      const pos = mesh.geometry.getAttribute("position");
+      const index = mesh.geometry.index;
+      const faceCount = index ? index.count / 3 : pos.count / 3;
+      const stride = Math.max(1, Math.floor(faceCount / count));
+      const pts = [];
+      const v = new THREE.Vector3();
+      for (let f = 0; f < faceCount && pts.length < count; f += stride) {
+        const p = new THREE.Vector3();
+        for (let c = 0; c < 3; c++) {
+          const vi = index ? index.getX(f * 3 + c) : f * 3 + c;
+          p.add(v.fromBufferAttribute(pos, vi));
+        }
+        pts.push(p.multiplyScalar(1 / 3).applyMatrix4(mesh.matrixWorld));
+      }
+      return pts;
+    };
+
     const localCenter = new THREE.Vector3();
     this.tiles = meshes.map((mesh, i) => {
       const matIndex = this.materialIndexOf(mesh, i);
@@ -111,72 +159,153 @@ export class HighResStreamer {
         mesh,
         low: lowTiles[i] || null,
         center: localCenter.clone().applyMatrix4(mesh.matrixWorld),
+        samples: sampleFaceCentroids(mesh, SAMPLES_PER_TILE),
         bytes: img ? img.bytes : null,
         mime: img ? img.mime : null,
-        state: "low", // low | loading | high
+        state: "low", // low | loading | high (display state)
+        size: 0, // resident texture size (0 = base only)
+        targetSize: 0, // what computeTargets wants resident
+        decoding: false, // a decode for this tile is in flight
         texture: null,
         wanted: false,
       };
     });
+
+    // Median nearest-neighbour spacing of tile centers — the gaze-bubble
+    // radii scale with this, so behavior is consistent across map tilings.
+    const sample = Math.min(this.tiles.length, 30);
+    const dists = [];
+    for (let i = 0; i < sample; i++) {
+      let best = Infinity;
+      for (const o of this.tiles) {
+        if (o !== this.tiles[i]) {
+          best = Math.min(best, o.center.distanceToSquared(this.tiles[i].center));
+        }
+      }
+      if (best < Infinity) dists.push(Math.sqrt(best));
+    }
+    dists.sort((a, b) => a - b);
+    if (dists.length) this.tilePitch = dists[Math.floor(dists.length / 2)];
+
+    // Spatial-tiling detection: compare median tile extent to the map extent.
+    // Atlas-page "tiles" span the whole map → uniform residency mode.
+    const mapBox = new THREE.Box3();
+    const tileDiags = [];
+    const tb = new THREE.Box3();
+    for (const t of this.tiles) {
+      tb.setFromObject(t.mesh);
+      mapBox.union(tb);
+      tileDiags.push(tb.min.distanceTo(tb.max));
+    }
+    tileDiags.sort((a, b) => a - b);
+    const medianDiag = tileDiags[Math.floor(tileDiags.length / 2)] || 0;
+    const mapDiag = mapBox.min.distanceTo(mapBox.max) || 1;
+    this.spatialTiling = medianDiag < mapDiag * 0.5;
+    console.log(
+      `[streamer] tile extent ${(medianDiag / mapDiag * 100).toFixed(0)}% of map → ` +
+        (this.spatialTiling
+          ? "spatial tiling: gaze-bubble streaming"
+          : "atlas-page tiling: uniform residency (spatial selection is meaningless for this data)")
+    );
 
     this.active = true;
     this.update();
     return this.tiles.length;
   }
 
-  // Re-evaluate which tiles deserve a high-res texture. Default strategy is
-  // gaze-aware proximity; setFocus() overrides it with an explicit tile list.
-  update() {
-    if (!this.active || !this.tiles.length) return;
-
-    let wantedList = [];
+  // Decide every tile's target resolution. Gaze-bubble by default;
+  // setFocus() (review mode) pins native quality to an explicit tile list.
+  computeTargets() {
     if (this.focusTiles) {
+      for (const t of this.tiles) t.targetSize = 0;
+      let budget = this.totalCap;
       const take = (indices) => {
         if (!indices) return;
         for (const i of indices) {
-          if (wantedList.length >= this.maxHighResTiles) return;
+          if (budget <= 0) return;
           const t = this.tiles[i];
-          if (t && !wantedList.includes(t)) wantedList.push(t);
+          if (t && t.bytes && t.targetSize === 0) {
+            t.targetSize = this.nativeSize; // the item under review deserves max
+            budget--;
+          }
         }
       };
-      take(this.focusTiles); // current item first — prefetch only fills leftover budget
+      take(this.focusTiles); // current item first — prefetch fills leftover budget
       take(this.prefetchTiles);
-    } else {
-      // Priority = distance to the camera OR to the point the camera is
-      // LOOKING AT (view ray ∩ ground plane, clamped). Pure camera distance
-      // fails oblique aerial views: the nearest tiles sit below/behind the
-      // camera off-screen, eating the whole budget while every tile actually
-      // in frame stays base-res (near = blurry, far = deceptively fine).
-      const cam = this.camera.position;
-      this._dir = this._dir || new THREE.Vector3();
-      this._focus = this._focus || new THREE.Vector3();
-      this.camera.getWorldDirection(this._dir);
-      const LOOKAHEAD_MAX = 160; // scene units — near-horizon gazes don't chase infinity
-      let t = this._dir.y < -0.02 ? cam.y / -this._dir.y : LOOKAHEAD_MAX;
-      t = Math.min(Math.max(t, 0), LOOKAHEAD_MAX);
-      this._focus.copy(this._dir).multiplyScalar(t).add(cam);
+      return;
+    }
 
-      for (const tile of this.tiles) {
-        tile._score = Math.min(
-          tile.center.distanceToSquared(cam),
-          tile.center.distanceToSquared(this._focus)
-        );
+    // Atlas-page tilings: every tile contributes faces to every view, so the
+    // only strategy that visibly sharpens anything is all tiles resident at
+    // the budgeted ring size. (Native upgrades still happen via review-mode
+    // focus above, where we know exactly which pages an item's faces use.)
+    if (!this.spatialTiling) {
+      for (const t of this.tiles) {
+        t.targetSize = t.bytes ? Math.max(t.size, this.ringSize) : 0;
       }
-      wantedList = this.tiles
-        .slice()
-        .sort((a, b) => a._score - b._score)
-        .slice(0, this.maxHighResTiles);
+      return;
     }
 
-    const wantedSet = new Set(wantedList);
-    // Promote in priority order — the 3-wide decode queue fills with the most
-    // visible tiles first instead of whatever came first in the tile array.
-    for (const tile of wantedList) {
-      if (tile.bytes && tile.state === "low") this.promote(tile);
-    }
+    // Gaze focus = view ray ∩ ground plane (clamped). Pure camera distance
+    // fails oblique aerial views: the nearest tiles sit below/behind the
+    // camera off-screen while everything actually in frame stays base-res.
+    const cam = this.camera.position;
+    this._dir = this._dir || new THREE.Vector3();
+    this._focus = this._focus || new THREE.Vector3();
+    this.camera.getWorldDirection(this._dir);
+    const LOOKAHEAD_MAX = 160; // scene units — near-horizon gazes don't chase infinity
+    let ahead = this._dir.y < -0.02 ? cam.y / -this._dir.y : LOOKAHEAD_MAX;
+    ahead = Math.min(Math.max(ahead, 0), LOOKAHEAD_MAX);
+    this._focus.copy(this._dir).multiplyScalar(ahead).add(cam);
+
     for (const tile of this.tiles) {
-      tile.wanted = wantedSet.has(tile) && !!tile.bytes;
-      if (!tile.wanted && tile.state === "high") this.demote(tile);
+      const pts = tile.samples && tile.samples.length ? tile.samples : [tile.center];
+      let best = Infinity;
+      for (const p of pts) {
+        const d = Math.min(p.distanceTo(cam), p.distanceTo(this._focus));
+        if (d < best) best = d;
+      }
+      tile._score = best; // distance to the tile's nearest sampled geometry
+    }
+
+    const r1 = this.tilePitch * NATIVE_MARGIN_PITCH;
+    const r2 = this.tilePitch * RING_MARGIN_PITCH;
+    const sorted = this.tiles.slice().sort((a, b) => a._score - b._score);
+    let nativeLeft = this.nativeCap;
+    let totalLeft = this.totalCap;
+
+    for (const t of sorted) {
+      t.targetSize = 0;
+      if (!t.bytes || totalLeft <= 0) continue;
+      const m = t.size > 0 ? HYSTERESIS : 1; // resident tiles cling to their tier
+      if (nativeLeft > 0 && t._score <= r1 * m) {
+        t.targetSize = this.nativeSize;
+        nativeLeft--;
+        totalLeft--;
+      } else if (t._score <= r2 * m) {
+        t.targetSize = this.ringSize;
+        totalLeft--;
+      }
+    }
+  }
+
+  update() {
+    if (!this.active || !this.tiles.length) return;
+    this.computeTargets();
+
+    // Upgrades wanted, most-visible first — the 3-wide decode queue fills
+    // with what the user is looking at. Resident tiles above their target
+    // (native drifting into the ring) are left alone: no downgrade churn;
+    // they demote fully when they leave the ring.
+    const wantUp = this.tiles.filter(
+      (t) => t.bytes && !t.decoding && t.targetSize > t.size
+    );
+    wantUp.sort((a, b) => (a._score || 0) - (b._score || 0));
+    for (const t of wantUp) this.promote(t);
+
+    for (const t of this.tiles) {
+      t.wanted = t.targetSize > 0;
+      if (t.targetSize === 0 && t.state === "high") this.demote(t);
     }
     this.applyVisibility();
   }
@@ -212,21 +341,21 @@ export class HighResStreamer {
 
   promote(t) {
     if (this.decoding >= this.maxConcurrentDecodes) return; // retry next tick
-    t.state = "loading";
+    const size = t.targetSize;
+    t.decoding = true;
+    // Base→resident shows "loading" (low tile stays visible); an in-place
+    // UPGRADE keeps state "high" so the current texture never flickers out.
+    if (t.state === "low") t.state = "loading";
     this.decoding++;
-    this.decodeToCanvas(t.bytes, t.mime)
+    this.decodeToImage(t.bytes, t.mime, size)
       .then((image) => {
         this.decoding--;
-        if (!t.wanted) {
-          t.state = "low"; // camera moved away mid-decode
-          this.closeImage(image);
-          return;
-        }
-        this.uploadQueue.push({ t, image });
+        this.uploadQueue.push({ t, image, size });
       })
       .catch((err) => {
         this.decoding--;
-        t.state = "low";
+        t.decoding = false;
+        if (t.state === "loading") t.state = "low";
         console.warn("high-res tile decode failed", err);
       });
   }
@@ -235,11 +364,19 @@ export class HighResStreamer {
   // decoded texture per frame so sharpening never stalls the camera.
   drainUploads() {
     while (this.uploadQueue.length) {
-      const { t, image } = this.uploadQueue.shift();
-      if (!t.wanted) {
-        t.state = "low"; // demoted while waiting in the queue
+      const { t, image, size } = this.uploadQueue.shift();
+      t.decoding = false;
+      if (t.targetSize === 0) {
+        // demoted while decoding/queued
+        if (t.state === "loading") t.state = "low";
         this.closeImage(image);
         continue; // didn't upload anything — keep looking
+      }
+      if (t.texture) {
+        // in-place upgrade: free the old texture + its backing image
+        const old = t.texture.image;
+        t.texture.dispose();
+        this.closeImage(old);
       }
       const tex = new THREE.Texture(image);
       tex.colorSpace = THREE.SRGBColorSpace;
@@ -251,6 +388,7 @@ export class HighResStreamer {
       t.mesh.material.map = tex;
       t.mesh.material.needsUpdate = true;
       t.texture = tex;
+      t.size = size;
       t.state = "high";
       this.applyTileVisibility(t);
       return; // one real upload per frame
@@ -271,26 +409,21 @@ export class HighResStreamer {
     if (t.texture) {
       const img = t.texture.image;
       t.texture.dispose();
-      if (img && typeof img.close === "function") {
-        try {
-          img.close();
-        } catch (e) {
-          /* ignore */
-        }
-      }
+      this.closeImage(img);
       t.texture = null;
     }
     if (t.mesh.material) t.mesh.material.map = null;
     t.state = "low";
+    t.size = 0;
     this.applyTileVisibility(t);
   }
 
-  async decodeToCanvas(bytes, mime) {
+  async decodeToImage(bytes, mime, maxSize) {
     const blob = new Blob([bytes], { type: mime || "image/webp" });
     const bitmap = await createImageBitmap(blob);
     this.decodeCount++;
     const longest = Math.max(bitmap.width, bitmap.height);
-    const s = longest > this.maxTextureSize ? this.maxTextureSize / longest : 1;
+    const s = longest > maxSize ? maxSize / longest : 1;
     if (s === 1) return bitmap; // native size — upload the bitmap directly
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(bitmap.width * s));

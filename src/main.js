@@ -21,23 +21,25 @@ const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selectio
 // promoted to a high-res texture, capped so resident high-res VRAM stays bounded.
 // Promoted tiles are downscaled to MAX_TEXTURE_SIZE; far tiles have their high-res
 // texture disposed (VRAM freed, source image kept for cheap re-upload).
-// Baseline (touch devices): conservative caps that survive tablets/phones.
-// Desktops get the full-quality profile below — source tiles are 2048², so
-// capping at 1024 was silently halving detail everywhere.
-const MAX_TEXTURE_SIZE = 1024; // per-tile high-res cap (1024^2 RGBA ~= 5.6 MB VRAM)
-const MAX_HIGH_RES_TILES = 16; // nearest N tiles that may hold a high-res texture
-// ROLLED BACK to the week-proven config on every device: 16 @ 1024. The
-// higher-quality experiments (2048 textures, 32 tiles, 8x anisotropy)
-// regressed navigation on Mac. Higher settings remain reachable via
-// ?tex= and ?tiles= URL params only. Revisit as tiered gaze-bubble streaming.
-const DESKTOP_TEXTURE_SIZE = 1024;
-const DESKTOP_HIGH_RES_TILES = 16;
+// Tiered gaze-bubble profiles (see HighResStreamer): a few NATIVE-res tiles
+// where the user looks, a 1024 ring around them, base elsewhere. Native
+// uploads are rare + throttled to one per frame, so quality no longer trades
+// against smooth navigation. Touch keeps everything at 1024 (memory), which
+// collapses the tiers into a single gaze-targeted bubble.
+// NOTE (Jul 2026, measured): this map's "tiles" are ODM atlas pages that each
+// span the ENTIRE site — no spatial tiling exists, so the streamer detects
+// that and switches to uniform residency: ALL pages resident at ringSize
+// (native reserved for review-mode focus). ringSize is therefore the whole
+// VRAM story on such maps: 130 × 1024² ≈ 730 MB desktop, 130 × 512² ≈ 180 MB
+// touch. The gaze bubble engages only on genuinely spatial tilings.
+const TOUCH_PROFILE = { nativeSize: 1024, ringSize: 512, nativeCap: 16, totalCap: 16 };
+const DESKTOP_PROFILE = { nativeSize: 2048, ringSize: 1024, nativeCap: 10, totalCap: 32 };
 const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "demo-3";
+const BUILD_VERSION = "full-1";
 
 class MeshExplorer {
   constructor() {
@@ -84,27 +86,38 @@ class MeshExplorer {
 
     // Device-tiered streaming quality (?tex= and ?tiles= override for tuning).
     const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    const base = isTouch ? TOUCH_PROFILE : DESKTOP_PROFILE;
+    // Uniform (atlas) maps hold ALL pages at ringSize, so ringSize IS the
+    // close-up quality. Desktop = native 2048 unconditionally (~2.9 GB
+    // textures, Blender parity; measured source: 107×2048 + 23×1024).
+    // Weaker machines can pass ?ring=1024 — no silent downgrades.
     this.streamProfile = {
-      maxTextureSize:
-        parseInt(params.get("tex"), 10) ||
-        (isTouch ? MAX_TEXTURE_SIZE : DESKTOP_TEXTURE_SIZE),
-      maxHighResTiles:
-        parseInt(params.get("tiles"), 10) ||
-        (isTouch ? MAX_HIGH_RES_TILES : DESKTOP_HIGH_RES_TILES),
+      ...base,
+      nativeSize: parseInt(params.get("tex"), 10) || base.nativeSize,
+      ringSize:
+        parseInt(params.get("ring"), 10) || (isTouch ? base.ringSize : 2048),
+      totalCap: parseInt(params.get("tiles"), 10) || base.totalCap,
     };
     console.log(
-      `[drone-mesh] stream profile: ${this.streamProfile.maxHighResTiles} tiles @ ${this.streamProfile.maxTextureSize}px (${isTouch ? "touch" : "desktop"})`
+      `[drone-mesh] stream profile: ${this.streamProfile.nativeCap} native @ ${this.streamProfile.nativeSize}px + ring @ ${this.streamProfile.ringSize}px, total ${this.streamProfile.totalCap} (${isTouch ? "touch" : "desktop"})`
     );
-    if (params.has("local")) {
-      this.loadProgressiveMesh(
-        "/resources/models/coconut-low.glb",
-        "/resources/models/coconut-high.glb"
-      );
+    const lowUrl = params.has("local")
+      ? "/resources/models/coconut-low.glb"
+      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq";
+    const highUrl = params.has("local")
+      ? "/resources/models/coconut-high.glb"
+      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl";
+
+    // NOTE: flag is "full", not "raw" — ?raw is a reserved Vite dev-server
+    // query (raw file transform) and 403s the page.
+    if (params.has("full")) {
+      // GROUND-TRUTH MODE: no streamer, no texture stripping, no decode
+      // pipeline. GLTFLoader ingests the full high-res GLB with textures —
+      // the identical path Blender uses. This is, by definition, the maximum
+      // quality this file contains. Desktop-class memory required (~2.9 GB).
+      this.loadRawHighRes(highUrl);
     } else {
-      this.loadProgressiveMesh(
-        "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq",
-        "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl"
-      );
+      this.loadProgressiveMesh(lowUrl, highUrl);
     }
   }
 
@@ -344,8 +357,8 @@ class MeshExplorer {
     if (this.ui) this.ui.panel.classList.remove("active");
   }
 
-  // Live streamer stats (enabled with ?debug): proves LOD promotion/demotion
-  // is actually happening and that resident high-res stays within budget.
+  // Live streamer + frame stats (enabled with ?debug): proves the gaze
+  // bubble is targeting correctly and that no frame is eating a stall.
   updateLODDebug() {
     let el = document.getElementById("lod-debug");
     if (!el) {
@@ -357,19 +370,30 @@ class MeshExplorer {
         "padding:3px 6px;border-radius:4px;white-space:pre";
       document.body.appendChild(el);
     }
-    const tiles = this.streamer.tiles;
-    let high = 0;
-    let loading = 0;
-    let visHigh = 0;
-    for (const t of tiles) {
-      if (t.state === "high") high++;
-      if (t.state === "loading") loading++;
-      if (t.mesh.visible) visHigh++;
+    const s = this.streamer;
+    let native = 0;
+    let ring = 0;
+    let decoding = 0;
+    for (const t of s.tiles) {
+      if (t.state === "high") {
+        if (t.size >= s.nativeSize && s.nativeSize > s.ringSize) native++;
+        else ring++;
+      }
+      if (t.decoding) decoding++;
     }
-    const mode = this.streamer.focusTiles ? "FOCUS(review)" : "proximity";
+    const mode = s.focusTiles
+      ? "FOCUS(review)"
+      : s.spatialTiling
+        ? "gaze"
+        : "uniform(atlas)";
+    const ema = this._frameEMA == null ? 0 : this._frameEMA;
+    const worst = this._frameWorst || 0;
     el.textContent =
-      `LOD ${mode} · ${high}/${this.streamer.maxHighResTiles} high resident` +
-      ` (${visHigh} shown) · ${loading} decoding · ${this.streamer.decodeCount} lifetime decodes`;
+      `LOD ${mode} · ${native} native + ${ring} ring / ${s.totalCap} · ` +
+      `${decoding} decoding · ${s.uploadQueue.length} queued · ${s.decodeCount} total\n` +
+      `sizes ring=${s.ringSize} native=${s.nativeSize} · deviceMemory=${navigator.deviceMemory ?? "n/a"}\n` +
+      `frame ${ema.toFixed(1)}ms avg · worst ${worst.toFixed(0)}ms since last update`;
+    this._frameWorst = 0;
   }
 
   // --- auto-tagging ------------------------------------------------------------
@@ -833,6 +857,36 @@ class MeshExplorer {
     loader.classList.remove("active");
   }
 
+  async loadRawHighRes(url) {
+    try {
+      this.showLoading("Loading FULL model (ground-truth mode)…");
+      const mesh = await this.meshLoader.loadFromUrl(url, (p) =>
+        this.updateLoadingProgress(p)
+      );
+      await this.setupMesh(mesh);
+      this.hideLoading();
+      console.log(
+        "[drone-mesh] RAW mode: full GLB with native textures, no streaming pipeline"
+      );
+
+      // Selection/labeling still work, but against the raw mesh's own face
+      // indexing — keep its labels in a separate storage bucket so they can't
+      // corrupt the canonical (progressive-mode) label set.
+      this.selector = new SurfaceSelector(this.scene);
+      this.labels = new LabelManager({
+        scene: this.scene,
+        root: this.currentMesh,
+        mapKey: `${url}#raw`,
+      });
+      this.labels.restore();
+      this.renderLabelList();
+    } catch (err) {
+      this.hideLoading();
+      console.error("raw load failed", err);
+      alert(`Failed to load full model: ${err.message}`);
+    }
+  }
+
   async loadProgressiveMesh(lowResUrl, highResUrl) {
     try {
       // Load low-res version first
@@ -879,9 +933,10 @@ class MeshExplorer {
         scene: this.scene,
         camera: this.camera,
         gltfLoader: this.meshLoader.loaders.gltf,
-        maxTextureSize: this.streamProfile.maxTextureSize,
-        maxHighResTiles: this.streamProfile.maxHighResTiles,
-        maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy(),
+        nativeSize: this.streamProfile.nativeSize,
+        ringSize: this.streamProfile.ringSize,
+        nativeCap: this.streamProfile.nativeCap,
+        totalCap: this.streamProfile.totalCap,
       });
       const tileCount = await this.streamer.load(highResUrl, this.currentMesh);
       console.log(`High-res streaming active: ${tileCount} tiles`);
@@ -992,6 +1047,18 @@ class MeshExplorer {
 
   animate() {
     requestAnimationFrame(() => this.animate());
+
+    // Frame-time telemetry for the ?debug HUD — measure BEFORE any work so
+    // stalls anywhere in the app show up, not just in this loop.
+    if (this.debugLOD) {
+      const now = performance.now();
+      if (this._lastFrameT != null) {
+        const dt = now - this._lastFrameT;
+        this._frameEMA = this._frameEMA == null ? dt : this._frameEMA * 0.9 + dt * 0.1;
+        if (dt > (this._frameWorst || 0)) this._frameWorst = dt;
+      }
+      this._lastFrameT = now;
+    }
 
     if (this.mode === "review" && this.review) {
       this.review.updateFrame(); // tween + orbit damping
