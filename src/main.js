@@ -27,19 +27,32 @@ const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selectio
 // against smooth navigation. Touch keeps everything at 1024 (memory), which
 // collapses the tiers into a single gaze-targeted bubble.
 // NOTE (Jul 2026, measured): this map's "tiles" are ODM atlas pages that each
-// span the ENTIRE site — no spatial tiling exists, so the streamer detects
-// that and switches to uniform residency: ALL pages resident at ringSize
-// (native reserved for review-mode focus). ringSize is therefore the whole
-// VRAM story on such maps: 130 × 1024² ≈ 730 MB desktop, 130 × 512² ≈ 180 MB
-// touch. The gaze bubble engages only on genuinely spatial tilings.
-const TOUCH_PROFILE = { nativeSize: 1024, ringSize: 512, nativeCap: 16, totalCap: 16 };
-const DESKTOP_PROFILE = { nativeSize: 2048, ringSize: 1024, nativeCap: 10, totalCap: 32 };
+// span the ENTIRE site. The streamer detects that and uses a face-level
+// spatial index for deferred-until-needed loading: pages with geometry near
+// the camera/gaze promote (native inner radius, ring outer), everything else
+// stays base until approached, demoting when left behind. Caps are sized for
+// "how many pages a neighbourhood touches", not tile counts.
+// ONE strategy for every device: deferred single-tier loading — nothing
+// speculative, native-quality textures only near the camera. Hardware
+// evidence changes COVERAGE (caps = how many pages may be resident), never
+// the strategy and never the quality ceiling. Caps are the safety net; the
+// 3D-distance reach is what actually bounds residency.
+// keepDist = retention radius: how far you can back away before resident
+// textures evict. Validated hardware keeps most of a session's visited area
+// warm (the texture is already paid for — retention is the cheap luxury);
+// lite devices evict aggressively.
+// Lite native is 1024, not 2048: one locale of scattered atlas pages needs
+// ~20-40 pages resident, and cheap devices can afford that ONLY at 1024
+// (≈5.6 MB/page vs 22). Full local coverage at good quality beats patchy
+// coverage at max quality — the earlier 6-page cap starved neighbourhoods.
+const LITE_CAPS = { nativeSize: 1024, ringSize: 1024, nativeCap: 24, totalCap: 48, keepDist: 16 };
+const RICH_CAPS = { nativeSize: 2048, ringSize: 1024, nativeCap: 32, totalCap: 128, keepDist: 45 };
 const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "full-1";
+const BUILD_VERSION = "tune-1";
 
 class MeshExplorer {
   constructor() {
@@ -78,15 +91,42 @@ class MeshExplorer {
     this.setupEventListeners();
     this.animate();
 
-    // Auto-load the coconut farm mesh. `?local` swaps the CDN for the copies
-    // in resources/models (gitignored; dev-server only) — disk-speed loads
-    // and offline testing. `?debug` overlays live LOD streaming stats.
+    // URL surface, deliberately tiny:
+    //   (nothing) — the experience. Local files auto-detected, else CDN.
+    //   ?debug    — HUD + state tinting + load-zone rings, all of it.
+    //   ?full     — ground truth: whole GLB, no pipeline.
+    // (?tex/?ring/?tiles/?lite/?hq/?local remain as undocumented tuning.)
     const params = new URLSearchParams(location.search);
-    this.debugLOD = params.has("debug");
+    const dbg = params.has("debug") || params.has("viz");
+    this.debugLOD = dbg;
+    this.debugViz = dbg;
 
-    // Device-tiered streaming quality (?tex= and ?tiles= override for tuning).
+    // LITE IS THE DEFAULT — for every device, always. The rich profile is
+    // opt-IN via progressive enhancement: granted only on POSITIVE hardware
+    // evidence (reported memory or a recognisably capable GPU), never on
+    // touch devices (thermals), never on unknown hardware. Overrides:
+    // ?hq forces rich, ?lite forces lite.
     const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-    const base = isTouch ? TOUCH_PROFILE : DESKTOP_PROFILE;
+    let gpu = "";
+    try {
+      const gl = this.renderer.getContext();
+      const info = gl.getExtension("WEBGL_debug_renderer_info");
+      gpu = String(
+        info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
+      );
+    } catch (e) {
+      /* no evidence → stay lite */
+    }
+    const memoryOK = (navigator.deviceMemory || 0) >= 8;
+    const gpuOK = /apple m\d|rtx|geforce|radeon pro|radeon rx|nvidia/i.test(gpu);
+    const validated = !isTouch && (memoryOK || gpuOK);
+    const rich = params.has("hq") || (validated && !params.has("lite"));
+    const base = rich ? RICH_CAPS : LITE_CAPS;
+    console.log(
+      `[drone-mesh] coverage: ${rich ? "RICH (validated hardware)" : "LITE (default)"} · ` +
+        `gpu="${gpu}" · deviceMemory=${navigator.deviceMemory ?? "n/a"} · ` +
+        `same strategy + native quality either way`
+    );
     // Uniform (atlas) maps hold ALL pages at ringSize, so ringSize IS the
     // close-up quality. Desktop = native 2048 unconditionally (~2.9 GB
     // textures, Blender parity; measured source: 107×2048 + 23×1024).
@@ -94,31 +134,13 @@ class MeshExplorer {
     this.streamProfile = {
       ...base,
       nativeSize: parseInt(params.get("tex"), 10) || base.nativeSize,
-      ringSize:
-        parseInt(params.get("ring"), 10) || (isTouch ? base.ringSize : 2048),
+      ringSize: parseInt(params.get("ring"), 10) || base.ringSize,
       totalCap: parseInt(params.get("tiles"), 10) || base.totalCap,
     };
     console.log(
-      `[drone-mesh] stream profile: ${this.streamProfile.nativeCap} native @ ${this.streamProfile.nativeSize}px + ring @ ${this.streamProfile.ringSize}px, total ${this.streamProfile.totalCap} (${isTouch ? "touch" : "desktop"})`
+      `[drone-mesh] stream caps: ${this.streamProfile.nativeCap} native @ ${this.streamProfile.nativeSize}px, total ${this.streamProfile.totalCap}`
     );
-    const lowUrl = params.has("local")
-      ? "/resources/models/coconut-low.glb"
-      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq";
-    const highUrl = params.has("local")
-      ? "/resources/models/coconut-high.glb"
-      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl";
-
-    // NOTE: flag is "full", not "raw" — ?raw is a reserved Vite dev-server
-    // query (raw file transform) and 403s the page.
-    if (params.has("full")) {
-      // GROUND-TRUTH MODE: no streamer, no texture stripping, no decode
-      // pipeline. GLTFLoader ingests the full high-res GLB with textures —
-      // the identical path Blender uses. This is, by definition, the maximum
-      // quality this file contains. Desktop-class memory required (~2.9 GB).
-      this.loadRawHighRes(highUrl);
-    } else {
-      this.loadProgressiveMesh(lowUrl, highUrl);
-    }
+    this.startLoading(params);
   }
 
   init() {
@@ -285,6 +307,19 @@ class MeshExplorer {
         else this.cancelPendingSelection();
         return;
       }
+      // Live LOD range tuning in ?debug: [ shrinks the load/reveal radii,
+      // ] grows them. Rings + HUD update live; report the multiplier that
+      // feels right and it becomes the default.
+      if (this.debugLOD && this.streamer && (event.key === "[" || event.key === "]")) {
+        const s = this.streamer;
+        s.rangeScale =
+          event.key === "["
+            ? Math.max(0.25, s.rangeScale * 0.8)
+            : Math.min(4, s.rangeScale * 1.25);
+        s.update();
+        this.updateLODDebug();
+        return;
+      }
       // Desktop review shortcuts (FirstPersonControls is disabled in review,
       // so no WASD conflicts).
       if (this.mode === "review" && this.review && this.review.active) {
@@ -385,15 +420,88 @@ class MeshExplorer {
       ? "FOCUS(review)"
       : s.spatialTiling
         ? "gaze"
-        : "uniform(atlas)";
+        : "defer(atlas)";
     const ema = this._frameEMA == null ? 0 : this._frameEMA;
     const worst = this._frameWorst || 0;
     el.textContent =
       `LOD ${mode} · ${native} native + ${ring} ring / ${s.totalCap} · ` +
       `${decoding} decoding · ${s.uploadQueue.length} queued · ${s.decodeCount} total\n` +
       `sizes ring=${s.ringSize} native=${s.nativeSize} · deviceMemory=${navigator.deviceMemory ?? "n/a"}\n` +
+      `range ×${s.rangeScale.toFixed(2)} → load ${s.loadRadius.toFixed(1)}u · reveal ${s.revealRadius.toFixed(1)}u · keep ${s.unloadDist}u  ([ / ] to tune)\n` +
       `frame ${ema.toFixed(1)}ms avg · worst ${worst.toFixed(0)}ms since last update`;
     this._frameWorst = 0;
+  }
+
+  // ?viz: tint each tile's material by its live streaming state. Tint means
+  // "the streamer touched this"; untinted means base-only. A static green map
+  // = streamer idle; flashing orange while flying = churn.
+  updateVizTint() {
+    const s = this.streamer;
+    const matOf = (m) =>
+      m && (Array.isArray(m.material) ? m.material[0] : m.material);
+    for (const t of s.tiles) {
+      for (const m of [t.mesh, t.low]) {
+        const mat = matOf(m);
+        if (!mat || !mat.color) continue;
+        if (mat.userData._origColor === undefined) {
+          mat.userData._origColor = mat.color.getHex();
+        }
+      }
+      // Tint ONLY the enhanced overlay (renders where clusters reveal —
+      // strictly local). Never tint the base mesh: it is the whole-map
+      // scatter, and tinting it flashed every decode across the entire map.
+      const tint =
+        t.state === "high"
+          ? t.size >= s.nativeSize
+            ? 0x55ff55
+            : 0xffee44
+          : null;
+      const hiMat = matOf(t.mesh);
+      if (hiMat && hiMat.color) {
+        hiMat.color.setHex(tint !== null ? tint : hiMat.userData._origColor);
+      }
+      const loMat = matOf(t.low);
+      if (loMat && loMat.color && loMat.userData._origColor !== undefined) {
+        loMat.color.setHex(loMat.userData._origColor);
+      }
+    }
+  }
+
+  // ?viz: wireframe rings on the ground showing the actual 3D-distance load
+  // zone (green = native reach, yellow = ring reach). Because the thresholds
+  // are true 3D distances, the ground-plane rings shrink as you climb —
+  // at high altitude they vanish: nothing is close, nothing loads.
+  updateVizRings() {
+    const s = this.streamer;
+    if (!s || !s.grid || s.spatialTiling) return;
+    if (!this.vizRings) {
+      const mkRing = (color) => {
+        const pts = [];
+        for (let i = 0; i <= 48; i++) {
+          const a = (i / 48) * Math.PI * 2;
+          pts.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+        }
+        const geom = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = new THREE.LineBasicMaterial({ color, depthTest: false });
+        const line = new THREE.Line(geom, mat);
+        line.renderOrder = 1001;
+        this.scene.add(line);
+        return line;
+      };
+      this.vizRings = { native: mkRing(0x33ff33), ring: mkRing(0xffdd33) };
+    }
+    const cam = this.camera.position;
+    const cell = s.cellOf(cam);
+    const gy = s.cellY ? s.cellY[cell.cz * s.grid.n + cell.cx] : 0;
+    const dy = cam.y - gy;
+    const place = (line, R) => {
+      const r = Math.sqrt(Math.max(0, R * R - dy * dy));
+      line.visible = r > 0.05;
+      line.position.set(cam.x, gy + 0.05, cam.z);
+      line.scale.set(r, 1, r);
+    };
+    place(this.vizRings.native, s.loadRadius); // green: load radius (live-tuned)
+    place(this.vizRings.ring, s.unloadDist); // yellow: keep-resident boundary
   }
 
   // --- auto-tagging ------------------------------------------------------------
@@ -857,6 +965,37 @@ class MeshExplorer {
     loader.classList.remove("active");
   }
 
+  // Pick mesh sources (local copies auto-detected, else CDN) and dispatch to
+  // the requested mode. No ?local needed on dev machines with the files.
+  async startLoading(params) {
+    let useLocal = params.has("local");
+    if (!useLocal) {
+      try {
+        const probe = await fetch("/resources/models/coconut-low.glb", { method: "HEAD" });
+        useLocal = probe.ok;
+      } catch (e) {
+        /* CDN it is */
+      }
+    }
+    const lowUrl = useLocal
+      ? "/resources/models/coconut-low.glb"
+      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNx0lqYJJ2zb6Xow4apUyGg09cPEkSDjMLBJKHq";
+    const highUrl = useLocal
+      ? "/resources/models/coconut-high.glb"
+      : "https://9cw9jnmyps.ufs.sh/f/lmDN3zvaRWNxioLwD1Ldeg4T8dxVEobRa6BzCGisrcLNPtOl";
+    console.log(`[drone-mesh] source: ${useLocal ? "local files" : "CDN"}`);
+
+    if (params.has("full")) {
+      // GROUND-TRUTH MODE: no streamer, no texture stripping, no decode
+      // pipeline. GLTFLoader ingests the full high-res GLB with textures —
+      // the identical path Blender uses. This is, by definition, the maximum
+      // quality this file contains. Desktop-class memory required (~2.9 GB).
+      this.loadRawHighRes(highUrl);
+    } else {
+      this.loadProgressiveMesh(lowUrl, highUrl);
+    }
+  }
+
   async loadRawHighRes(url) {
     try {
       this.showLoading("Loading FULL model (ground-truth mode)…");
@@ -937,6 +1076,7 @@ class MeshExplorer {
         ringSize: this.streamProfile.ringSize,
         nativeCap: this.streamProfile.nativeCap,
         totalCap: this.streamProfile.totalCap,
+        keepDist: this.streamProfile.keepDist,
       });
       const tileCount = await this.streamer.load(highResUrl, this.currentMesh);
       console.log(`High-res streaming active: ${tileCount} tiles`);
@@ -949,7 +1089,30 @@ class MeshExplorer {
         if (this.review.active && item) this.review.applyFocus(item);
       }
 
-      this.hideProgressiveLoader();
+      // Keep the pill up — with a live counter — until every wanted texture
+      // is actually resident. The warmup window is where upload work happens
+      // (and where frames may dip); labeling it stops it reading as "the app
+      // is just slow".
+      const pillText = document.querySelector("#progressive-loader span");
+      const warmupWatch = setInterval(() => {
+        const s = this.streamer;
+        if (!s || !s.tiles.length) return;
+        const resident = s.tiles.filter((t) => t.state === "high").length;
+        const wanted = s.tiles.filter((t) => t.wanted).length;
+        if (pillText) {
+          pillText.textContent = `Enhancing quality… ${resident}/${wanted || "?"}`;
+        }
+        const done =
+          s.uploadQueue.length === 0 &&
+          s.decoding === 0 &&
+          s.tiles.every((t) => !t.wanted || t.state === "high");
+        if (done) {
+          clearInterval(warmupWatch);
+          this.hideProgressiveLoader();
+          if (pillText) pillText.textContent = "Enhancing quality...";
+          console.log(`[streamer] warmup complete: ${resident} textures resident`);
+        }
+      }, 250);
       this.isLoadingHighRes = false;
     } catch (error) {
       this.hideLoading();
@@ -1056,6 +1219,7 @@ class MeshExplorer {
         const dt = now - this._lastFrameT;
         this._frameEMA = this._frameEMA == null ? dt : this._frameEMA * 0.9 + dt * 0.1;
         if (dt > (this._frameWorst || 0)) this._frameWorst = dt;
+        this._frameWorstNow = dt; // this specific frame, for spike forensics
       }
       this._lastFrameT = now;
     }
@@ -1079,7 +1243,26 @@ class MeshExplorer {
       if (this.frameCount % LOD_UPDATE_INTERVAL === 0) {
         this.streamer.update();
         if (this.debugLOD) this.updateLODDebug();
+        if (this.debugViz) {
+          this.updateVizTint();
+          this.updateVizRings();
+        }
       }
+    }
+
+    // Long-frame forensics: correlate every spike with streamer activity so
+    // "LOD tanks my fps" is verifiable frame by frame.
+    if (this.debugLOD && this._frameWorstNow > 33) {
+      const s = this.streamer;
+      console.log(
+        `[perf] ${this._frameWorstNow.toFixed(0)}ms frame · ` +
+          (s
+            ? `lastUpload=tile ${s.lastUploadTile ?? "none"}@${s.lastUploadSize ?? "-"} ` +
+              `${s.lastUploadAt ? Math.round(performance.now() - s.lastUploadAt) + "ms ago" : ""} · ` +
+              `decoding=${s.decoding} queued=${s.uploadQueue.length}`
+            : "no streamer")
+      );
+      this._frameWorstNow = 0;
     }
 
     this.renderer.render(this.scene, this.camera);

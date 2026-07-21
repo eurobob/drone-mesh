@@ -99,18 +99,47 @@ function makeStreamer(opts = {}) {
   assert(s.tiles[0].state === "high", "tile keeps current texture during upgrade");
 }
 
-// atlas-page mode: no spatial tiling → ALL tiles resident at ringSize,
-// no demotion of review-upgraded natives
+// atlas-page mode: face-level spatial index → deferred-until-needed by TRUE
+// 3D distance (altitude counts). Thresholds: native ≤ 6, ring ≤ 16, ×1.4
+// hysteresis for resident pages. Flat ground at y=0; cell centers at
+// world x = -45 + (cx+0.5)*10.
 {
-  const s = makeStreamer({ totalCap: 4 });
+  const s = makeStreamer({ nativeCap: 8, totalCap: 8 });
   s.spatialTiling = false;
-  s.tiles[7].size = 2048; // previously upgraded by review focus
+  s.grid = { n: 9, minX: -45, minZ: -45, cellW: 10, cellD: 10 };
+  s.cellY = new Float32Array(81); // flat ground at y=0
+  s.cellPages = new Array(81).fill(null);
+  const put = (cx, cz, page) => {
+    const k = cz * 9 + cx;
+    (s.cellPages[k] || (s.cellPages[k] = new Set())).add(page);
+  };
+  put(4, 4, 0); // world (0,0):  d from camera ≈ 2      → native (inside load radius 6)
+  put(5, 4, 1); // world (10,0): d ≈ 10.2 — inside keep band, but NOTHING loads there
+  put(8, 4, 2); // world (40,0): d ≈ 40                 → base (deferred)
+
+  s.camera.position.set(0, 2, 0); // low, standing next to page 0's faces
+
+  s.computeTargets();
+  assert(s.tiles[0].targetSize === 2048, "page with faces beside the camera → native");
+  assert(s.tiles[1].targetSize === 0, "NOTHING speculative: outside load radius stays base");
+  assert(s.tiles[2].targetSize === 0, "page 40 units out stays base (deferred)");
+
+  s.tiles[1].size = 2048; // already resident (walked past earlier)
   s.computeTargets();
   assert(
-    s.tiles.every((t) => t.targetSize >= 1024),
-    "uniform mode: every page targeted at ring size"
+    s.tiles[1].targetSize === 2048,
+    "resident page inside keep band is kept as-is (zero work, no demote)"
   );
-  assert(s.tiles[7].targetSize === 2048, "uniform mode keeps review-upgraded native");
+
+  // ALTITUDE IS DISTANCE: climb high and nothing qualifies — that is the
+  // "deferred until needed" contract.
+  s.camera.position.set(0, 40, 0);
+  for (const t of s.tiles) t.size = 0;
+  s.computeTargets();
+  assert(
+    s.tiles.every((t) => t.targetSize === 0),
+    "at altitude nothing is close → nothing loads"
+  );
 }
 
 {

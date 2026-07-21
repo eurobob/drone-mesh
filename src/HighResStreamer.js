@@ -36,8 +36,35 @@ const NATIVE_MARGIN_PITCH = 0.9; // native tier within this distance of tile geo
 const RING_MARGIN_PITCH = 2.8; // ring tier margin, in tile pitches
 const HYSTERESIS = 1.35; // resident tiles cling to their tier this much longer
 
+// Face-level spatial index (atlas-page maps): every face centroid is binned
+// into an XZ grid, so each cell knows exactly which PAGES have geometry in
+// it. "Deferred until needed" then works even though pages themselves are
+// scattered: pages with faces near the camera/gaze promote; everything else
+// stays at base until approached. No sampling gaps — every face is indexed.
+const INDEX_GRID = 28; // cells per axis over the map footprint
+// TRUE 3D distance thresholds (scene units, altitude included), SINGLE tier:
+// nothing speculative ever loads. Pages promote to native only inside the
+// load radius; already-resident pages are merely KEPT (zero work) until the
+// unload boundary; everything else is base. Flying high = far from
+// everything = nothing loads. Trade-off accepted by design: crossing the
+// boundary pops 512 → native with no pre-staged middle step.
+// Tuned for STREET-LEVEL proximity (1-3 units from a wall). Deliberately
+// tight: at any altitude that frames a whole district, nothing qualifies —
+// absolute distances read as "near" far too easily from elevated views.
+// (The principled future version is screen-space error, as in 3D Tiles.)
+const NATIVE_WORLD_DIST = 5; // load radius
+const ATLAS_UNLOAD_DIST = 16; // default keep-resident boundary (profile may widen)
+
+// Display is gated FINER than loading: each page's geometry is split at load
+// into locale clusters (zone-grid buckets of faces). A resident page only
+// REVEALS clusters that are near the camera AND inside the view frustum —
+// its far-away sibling fragments keep showing base, so enhancement never
+// appears in scattered pockets across the map.
+const ZONE_GRID = 12; // cluster zones per axis over the map footprint
+const CLUSTER_ON_DIST = 6; // reveal radius for enhanced clusters (×1.25 hysteresis)
+
 export class HighResStreamer {
-  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap }) {
+  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap, keepDist }) {
     this.scene = scene;
     this.camera = camera;
     this.gltfLoader = gltfLoader;
@@ -46,6 +73,13 @@ export class HighResStreamer {
     this.nativeCap = nativeCap; // max tiles at native size
     this.totalCap = totalCap; // max resident high-res tiles overall
     this.tilePitch = 5; // measured in load(); fallback for injected tiles
+
+    // exposed for the ?viz load-zone rings; unloadDist widens on validated
+    // hardware (retention is the cheap luxury — textures already paid for).
+    // rangeScale is a LIVE debug multiplier over load/reveal radii ([ and ]
+    // keys in ?debug) so the right feel can be dialled in-app, not guessed.
+    this.rangeScale = 1;
+    this.unloadDist = keepDist || ATLAS_UNLOAD_DIST;
 
     // Whether tiles are spatially localized. ODM atlas pages are usually NOT
     // — each "tile" scatters faces across the entire map (measured: every
@@ -188,7 +222,7 @@ export class HighResStreamer {
     if (dists.length) this.tilePitch = dists[Math.floor(dists.length / 2)];
 
     // Spatial-tiling detection: compare median tile extent to the map extent.
-    // Atlas-page "tiles" span the whole map → uniform residency mode.
+    // Atlas-page "tiles" span the whole map → face-level spatial index mode.
     const mapBox = new THREE.Box3();
     const tileDiags = [];
     const tb = new THREE.Box3();
@@ -200,17 +234,288 @@ export class HighResStreamer {
     tileDiags.sort((a, b) => a - b);
     const medianDiag = tileDiags[Math.floor(tileDiags.length / 2)] || 0;
     const mapDiag = mapBox.min.distanceTo(mapBox.max) || 1;
+    this.mapBox = mapBox;
     this.spatialTiling = medianDiag < mapDiag * 0.5;
     console.log(
       `[streamer] tile extent ${(medianDiag / mapDiag * 100).toFixed(0)}% of map → ` +
         (this.spatialTiling
           ? "spatial tiling: gaze-bubble streaming"
-          : "atlas-page tiling: uniform residency (spatial selection is meaningless for this data)")
+          : "atlas pages: face-level spatial index (deferred-until-needed)")
     );
+    if (!this.spatialTiling) {
+      this.buildSpatialIndex();
+      this.buildClusters();
+    }
 
     this.active = true;
     this.update();
     return this.tiles.length;
+  }
+
+  // Bin EVERY face centroid of every page into an XZ grid. One-time cost at
+  // load (~500k faces ≈ tens of ms); afterwards "which pages have geometry
+  // near point P" is an exact O(cells) query instead of a sampling guess.
+  buildSpatialIndex() {
+    const t0 = performance.now();
+    const n = INDEX_GRID;
+    const minX = this.mapBox.min.x;
+    const minZ = this.mapBox.min.z;
+    const cellW = (this.mapBox.max.x - minX) / n || 1;
+    const cellD = (this.mapBox.max.z - minZ) / n || 1;
+    const cells = new Array(n * n).fill(null);
+    const ySum = new Float64Array(n * n);
+    const yCount = new Uint32Array(n * n);
+    const v = new THREE.Vector3();
+
+    for (const tile of this.tiles) {
+      const geom = tile.mesh.geometry;
+      const pos = geom.getAttribute("position");
+      const index = geom.index;
+      const faceCount = index ? index.count / 3 : pos.count / 3;
+      const mw = tile.mesh.matrixWorld;
+      for (let f = 0; f < faceCount; f++) {
+        // one corner per face is plenty at this cell size
+        const vi = index ? index.getX(f * 3) : f * 3;
+        v.fromBufferAttribute(pos, vi).applyMatrix4(mw);
+        const cx = Math.min(n - 1, Math.max(0, Math.floor((v.x - minX) / cellW)));
+        const cz = Math.min(n - 1, Math.max(0, Math.floor((v.z - minZ) / cellD)));
+        const key = cz * n + cx;
+        (cells[key] || (cells[key] = new Set())).add(tile.index);
+        ySum[key] += v.y;
+        yCount[key]++;
+      }
+    }
+
+    this.cellPages = cells;
+    this.cellY = new Float32Array(n * n);
+    for (let k = 0; k < n * n; k++) {
+      this.cellY[k] = yCount[k] ? ySum[k] / yCount[k] : 0;
+    }
+    this.grid = { n, minX, minZ, cellW, cellD };
+    // stats: how many pages does a typical neighbourhood actually need?
+    const mid = cells[Math.floor(cells.length / 2)];
+    console.log(
+      `[streamer] spatial index built in ${(performance.now() - t0).toFixed(0)}ms · ` +
+        `${n}x${n} cells · centre cell touches ${mid ? mid.size : 0} pages`
+    );
+  }
+
+  // Split each page's index into locale clusters (contiguous ranges grouped
+  // by zone), so display can be gated per cluster while the texture stays
+  // one per page. The page keeps ONE geometry + material; groups flip
+  // between the real material (0) and a shared invisible material (1).
+  // The base (low) mesh underneath stays whole and always visible;
+  // polygonOffset lets revealed clusters win the depth fight cleanly.
+  buildClusters() {
+    const Z = ZONE_GRID;
+    const minX = this.mapBox.min.x;
+    const minZ = this.mapBox.min.z;
+    const zw = (this.mapBox.max.x - minX) / Z || 1;
+    const zd = (this.mapBox.max.z - minZ) / Z || 1;
+    const v = new THREE.Vector3();
+    this.hiddenMat = this.hiddenMat || new THREE.MeshBasicMaterial({ visible: false });
+
+    for (const t of this.tiles) {
+      const geom = t.mesh.geometry;
+      const index = geom.index;
+      if (!index) continue; // non-indexed: whole-page fallback
+      const pos = geom.getAttribute("position");
+      const faceCount = index.count / 3;
+      const mw = t.mesh.matrixWorld;
+
+      const buckets = new Map(); // zoneKey -> {faces, sx, sy, sz}
+      for (let f = 0; f < faceCount; f++) {
+        const vi = index.getX(f * 3);
+        v.fromBufferAttribute(pos, vi).applyMatrix4(mw);
+        const zx = Math.min(Z - 1, Math.max(0, Math.floor((v.x - minX) / zw)));
+        const zz = Math.min(Z - 1, Math.max(0, Math.floor((v.z - minZ) / zd)));
+        const key = zz * Z + zx;
+        let b = buckets.get(key);
+        if (!b) {
+          b = { faces: [], sx: 0, sy: 0, sz: 0 };
+          buckets.set(key, b);
+        }
+        b.faces.push(f);
+        b.sx += v.x;
+        b.sy += v.y;
+        b.sz += v.z;
+      }
+
+      // reorder the index so every cluster is one contiguous group
+      const src = index.array;
+      const dst = new src.constructor(src.length);
+      const clusters = [];
+      let o = 0;
+      for (const b of buckets.values()) {
+        const start = o;
+        for (const f of b.faces) {
+          dst[o++] = src[f * 3];
+          dst[o++] = src[f * 3 + 1];
+          dst[o++] = src[f * 3 + 2];
+        }
+        clusters.push({
+          start,
+          count: o - start,
+          centroid: new THREE.Vector3(
+            b.sx / b.faces.length,
+            b.sy / b.faces.length,
+            b.sz / b.faces.length
+          ),
+          on: false,
+        });
+      }
+      geom.setIndex(new THREE.BufferAttribute(dst, 1));
+      geom.clearGroups();
+      for (const c of clusters) geom.addGroup(c.start, c.count, 1); // start hidden
+
+      const pageMat = t.mesh.material;
+      pageMat.polygonOffset = true;
+      pageMat.polygonOffsetFactor = -1;
+      pageMat.polygonOffsetUnits = -1;
+      t.mesh.material = [pageMat, this.hiddenMat];
+      t.pageMat = pageMat;
+      t.clusters = clusters;
+    }
+  }
+
+  _updateFrustum() {
+    this._frustum = this._frustum || new THREE.Frustum();
+    this._projView = this._projView || new THREE.Matrix4();
+    this.camera.updateMatrixWorld();
+    this._projView.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse
+    );
+    this._frustum.setFromProjectionMatrix(this._projView);
+    return this._frustum;
+  }
+
+  // Reveal enhanced clusters only when near the camera AND in the frustum
+  // (review focus reveals the whole item regardless of orbit distance).
+  updateClusterVisibility() {
+    if (this.spatialTiling) return;
+    this._updateFrustum();
+    const cam = this.camera.position;
+    const focusMode = !!this.focusTiles;
+
+    for (const t of this.tiles) {
+      if (!t.clusters) continue;
+      const promoted = t.state === "high";
+      const groups = t.mesh.geometry.groups;
+      for (let ci = 0; ci < t.clusters.length; ci++) {
+        const c = t.clusters[ci];
+        let on = false;
+        if (promoted) {
+          if (focusMode) {
+            on = true;
+          } else {
+            const base = CLUSTER_ON_DIST * this.rangeScale;
+            const limit = c.on ? base * 1.25 : base;
+            const d = cam.distanceTo(c.centroid);
+            on = d <= limit && (d < 3 || this._frustum.containsPoint(c.centroid));
+          }
+        }
+        c.on = on;
+        groups[ci].materialIndex = on ? 0 : 1;
+      }
+    }
+  }
+
+  get loadRadius() {
+    return NATIVE_WORLD_DIST * this.rangeScale;
+  }
+
+  get revealRadius() {
+    return CLUSTER_ON_DIST * this.rangeScale;
+  }
+
+  cellOf(p) {
+    const g = this.grid;
+    return {
+      cx: Math.min(g.n - 1, Math.max(0, Math.floor((p.x - g.minX) / g.cellW))),
+      cz: Math.min(g.n - 1, Math.max(0, Math.floor((p.z - g.minZ) / g.cellD))),
+    };
+  }
+
+  // Where is the user looking? (view ray ∩ ground plane, clamped)
+  computeFocus() {
+    const cam = this.camera.position;
+    this._dir = this._dir || new THREE.Vector3();
+    this._focus = this._focus || new THREE.Vector3();
+    this.camera.getWorldDirection(this._dir);
+    const LOOKAHEAD_MAX = 160;
+    let ahead = this._dir.y < -0.02 ? cam.y / -this._dir.y : LOOKAHEAD_MAX;
+    ahead = Math.min(Math.max(ahead, 0), LOOKAHEAD_MAX);
+    return this._focus.copy(this._dir).multiplyScalar(ahead).add(cam);
+  }
+
+  // Deferred-until-needed for atlas pages, by TRUE 3D distance: a page
+  // promotes only when it has geometry in a cell whose center (including its
+  // measured ground height) is close to the camera. High altitude = nothing
+  // close = nothing loads. Camera proximity ONLY — no gaze lookahead, no
+  // speculative middle tier.
+  computeTargetsFromIndex() {
+    const cam = this.camera.position;
+    const g = this.grid;
+    const frustum = this._updateFrustum();
+    this._cellPt = this._cellPt || new THREE.Vector3();
+
+    // Two distances per page:
+    //  dAll — nearest cell by pure distance (governs RETENTION: what you've
+    //         loaded persists regardless of where you look)
+    //  dVis — nearest cell that is in the FRUSTUM or within arm's reach
+    //         (governs NEW LOADS: never spend work on what you can't see)
+    const dAllMap = new Map();
+    const dVisMap = new Map();
+    for (let cz = 0; cz < g.n; cz++) {
+      for (let cx = 0; cx < g.n; cx++) {
+        const key = cz * g.n + cx;
+        const set = this.cellPages[key];
+        if (!set) continue;
+        const wx = g.minX + (cx + 0.5) * g.cellW;
+        const wz = g.minZ + (cz + 0.5) * g.cellD;
+        const wy = this.cellY ? this.cellY[key] : 0;
+        const d = Math.hypot(cam.x - wx, cam.y - wy, cam.z - wz);
+        if (d > this.unloadDist) continue;
+        const visible =
+          d < 4 || frustum.containsPoint(this._cellPt.set(wx, wy, wz));
+        for (const page of set) {
+          const prevAll = dAllMap.get(page);
+          if (prevAll === undefined || d < prevAll) dAllMap.set(page, d);
+          if (visible) {
+            const prevVis = dVisMap.get(page);
+            if (prevVis === undefined || d < prevVis) dVisMap.set(page, d);
+          }
+        }
+      }
+    }
+
+    // nearest first; single tier: LOAD only visible+near, KEEP by distance
+    const entries = [...dAllMap.entries()].sort((a, b) => a[1] - b[1]);
+    let nativeLeft = this.nativeCap;
+    let totalLeft = this.totalCap;
+    for (const t of this.tiles) t.targetSize = 0;
+    for (const [page, dAll] of entries) {
+      const t = this.tiles[page];
+      if (!t || !t.bytes || totalLeft <= 0) continue;
+      t._score = dAll;
+      const dVis = dVisMap.get(page);
+      const loadDist = NATIVE_WORLD_DIST * this.rangeScale;
+      if (t.size === 0) {
+        // fresh load: must be near AND visible
+        if (dVis !== undefined && dVis <= loadDist && nativeLeft > 0) {
+          t.targetSize = this.nativeSize;
+          nativeLeft--;
+          totalLeft--;
+        }
+      } else if (dAll <= this.unloadDist) {
+        t.targetSize = Math.max(
+          t.size,
+          dVis !== undefined && dVis <= loadDist ? this.nativeSize : 0
+        );
+        totalLeft--;
+      }
+    }
   }
 
   // Decide every tile's target resolution. Gaze-bubble by default;
@@ -235,13 +540,15 @@ export class HighResStreamer {
       return;
     }
 
-    // Atlas-page tilings: every tile contributes faces to every view, so the
-    // only strategy that visibly sharpens anything is all tiles resident at
-    // the budgeted ring size. (Native upgrades still happen via review-mode
-    // focus above, where we know exactly which pages an item's faces use.)
+    // Atlas-page tilings: defer-until-needed via the face-level index.
+    // (Fallback to uniform residency only if the index is missing.)
     if (!this.spatialTiling) {
-      for (const t of this.tiles) {
-        t.targetSize = t.bytes ? Math.max(t.size, this.ringSize) : 0;
+      if (this.cellPages) {
+        this.computeTargetsFromIndex();
+      } else {
+        for (const t of this.tiles) {
+          t.targetSize = t.bytes ? Math.max(t.size, this.ringSize) : 0;
+        }
       }
       return;
     }
@@ -308,6 +615,7 @@ export class HighResStreamer {
       if (t.targetSize === 0 && t.state === "high") this.demote(t);
     }
     this.applyVisibility();
+    this.updateClusterVisibility();
   }
 
   // Wanted-strategy override. Pass null to return to camera proximity.
@@ -328,11 +636,17 @@ export class HighResStreamer {
     for (const t of this.tiles) this.applyTileVisibility(t);
   }
 
-  // Single source of truth for the low/high pair: high-res mesh shows only
-  // when resident AND in scope; the low-res twin covers every other case
-  // (including prefetched-but-out-of-scope tiles, which stay decoded but
-  // hidden until the queue advances into them).
+  // Single source of truth for the low/high pair. Two regimes:
+  // - clustered (atlas defer mode): base mesh ALWAYS visible; the high mesh
+  //   is a selectively-revealed overlay (per-cluster material toggling with
+  //   polygonOffset winning the depth fight where revealed).
+  // - pair-swap (spatial gaze mode + review focus): classic low/high swap.
   applyTileVisibility(t) {
+    if (t.clusters && !this.focusTiles) {
+      if (t.low) t.low.visible = true;
+      t.mesh.visible = t.state === "high";
+      return;
+    }
     const inScope = !this.scope || this.scope.has(t.index);
     const showHigh = inScope && t.state === "high";
     t.mesh.visible = showHigh;
@@ -385,12 +699,21 @@ export class HighResStreamer {
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
       tex.needsUpdate = true;
-      t.mesh.material.map = tex;
-      t.mesh.material.needsUpdate = true;
+      // After clustering, material is an ARRAY [pageMat, hidden] — assign to
+      // the actual page material, never the array (a plain `.map =` on the
+      // array is a silent no-op that renders clusters untextured).
+      const mat = t.pageMat || t.mesh.material;
+      mat.map = tex;
+      mat.needsUpdate = true;
       t.texture = tex;
       t.size = size;
       t.state = "high";
       this.applyTileVisibility(t);
+      this.updateClusterVisibility(); // reveal immediately, not next tick
+      // spike-forensics breadcrumbs (read by the ?debug long-frame logger)
+      this.lastUploadTile = t.index;
+      this.lastUploadSize = size;
+      this.lastUploadAt = performance.now();
       return; // one real upload per frame
     }
   }
@@ -412,7 +735,8 @@ export class HighResStreamer {
       this.closeImage(img);
       t.texture = null;
     }
-    if (t.mesh.material) t.mesh.material.map = null;
+    const mat = t.pageMat || t.mesh.material;
+    if (mat) mat.map = null;
     t.state = "low";
     t.size = 0;
     this.applyTileVisibility(t);
