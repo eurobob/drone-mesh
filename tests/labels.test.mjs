@@ -121,4 +121,36 @@ assert(
   "updated label persists"
 );
 
+// --- view filtering + coverage ---
+// State here: label (vegetation, unsure, 1 face on roof tile) and the
+// ground label (ground, unsure, 1 face). Fixture areas: ground 1 + roof 1
+// + mast 0.5 = 2.5 total; labeled = 0.5 + 0.5 = 1.0 → 40%.
+const groundLabel = mgr.list.find((l) => l.class === "ground");
+
+mgr.applyView({ mode: "confirmed", classId: null });
+assert(
+  !mgr.overlays.get(label.id).visible && !mgr.overlays.get(groundLabel.id).visible,
+  "confirmed view hides unsure labels"
+);
+mgr.applyView({ mode: "untagged", classId: null });
+assert(
+  mgr.overlays.get(label.id).visible &&
+    mgr.overlays.get(label.id).material.color.getHexString() === "191c19",
+  "untagged view dims labeled areas to ink"
+);
+mgr.applyView({ mode: "all", classId: "vegetation" });
+assert(
+  mgr.overlays.get(label.id).visible && !mgr.overlays.get(groundLabel.id).visible,
+  "class isolation shows only that class"
+);
+mgr.applyView({ mode: "all", classId: null });
+assert(
+  mgr.overlays.get(groundLabel.id).visible &&
+    mgr.overlays.get(label.id).material.color.getHexString() !== "191c19",
+  "all view restores visibility and class colors"
+);
+
+const cov = mgr.coverage();
+assert(Math.abs(cov - 40) < 1, `coverage is area-weighted (expected ~40, got ${cov.toFixed(1)})`);
+
 console.log("\nAll label tests passed.");

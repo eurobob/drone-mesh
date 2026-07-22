@@ -7,6 +7,7 @@ import { SurfaceSelector } from "./SurfaceSelector.js";
 import { LabelManager, LABEL_CLASSES, CONFIDENCE_LEVELS } from "./Labels.js";
 import { ReviewMode } from "./ReviewMode.js";
 import { autoTag } from "./AutoTagger.js";
+import { PaintTools } from "./PaintTools.js";
 
 // Configuration toggle
 const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
@@ -52,7 +53,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "ui-1";
+const BUILD_VERSION = "paint-1";
 
 class MeshExplorer {
   constructor() {
@@ -90,6 +91,8 @@ class MeshExplorer {
     // Selection refinement state: subtract mode, undo history (snapshots of
     // the pending face map, capped), and the label being edited in place.
     this.subMode = false;
+    this.eraseMode = false;
+    this.paint = null;
     this.pendingHistory = [];
     this.editingLabelId = null;
 
@@ -350,6 +353,7 @@ class MeshExplorer {
   }
 
   handleSurfaceSelection(clientX, clientY, mods = {}) {
+    if (this.eraseMode) return; // paint tool owns the pointer while erasing
     const adjusting = this.mode === "review" && this.reviewAdjust;
     if (this.mode !== "explore" && !adjusting) return;
     if (!this.currentMesh || !this.selector) return;
@@ -511,6 +515,7 @@ class MeshExplorer {
   }
 
   quietDisarm() {
+    this.setEraseMode(false);
     if (this.editingLabelId && this.labels) {
       this.labels.setOverlayVisible(this.editingLabelId, true);
     }
@@ -592,6 +597,7 @@ class MeshExplorer {
   }
 
   cancelPendingSelection() {
+    this.setEraseMode(false);
     // In review, "cancel" means discard edits: re-present the item fresh.
     if (this.mode === "review" && this.reviewAdjust && this.review) {
       this.review.show(this.review.index);
@@ -642,6 +648,7 @@ class MeshExplorer {
       `${decoding} decoding · ${s.uploadQueue.length} queued · ${s.decodeCount} total\n` +
       `sizes ring=${s.ringSize} native=${s.nativeSize} · deviceMemory=${navigator.deviceMemory ?? "n/a"}\n` +
       `range ×${s.rangeScale.toFixed(2)} → load ${s.loadRadius.toFixed(1)}u · reveal ${s.revealRadius.toFixed(1)}u · keep ${s.unloadDist}u  ([ / ] to tune)\n` +
+      `motion ${s.camSpeed.toFixed(1)}u/s ${s.motionHold ? "· HELD (idle)" : "· streaming"}\n` +
       `frame ${ema.toFixed(1)}ms avg · worst ${worst.toFixed(0)}ms since last update`;
     this._frameWorst = 0;
   }
@@ -833,22 +840,60 @@ class MeshExplorer {
 
   setAddMode(on) {
     this.addMode = on;
-    if (on) this.subMode = false;
+    if (on) { this.subMode = false; this.setEraseMode(false); }
     this.syncModeToggles();
   }
 
   setSubMode(on) {
     this.subMode = on;
-    if (on) this.addMode = false;
+    if (on) { this.addMode = false; this.setEraseMode(false); }
     this.syncModeToggles();
+  }
+
+  // Erase mode hands the pointer to PaintTools (lasso on mouse, brush on
+  // touch) and locks the active camera controller so the gesture is ours.
+  setEraseMode(on) {
+    on = !!on && !!this.pending; // nothing to tidy without a selection
+    if (on === this.eraseMode) return;
+    this.eraseMode = on;
+    if (on) { this.addMode = false; this.subMode = false; }
+    if (this.paint) this.paint.setEnabled(on);
+    if (this.mode === "review") {
+      if (this.orbit) this.orbit.enabled = !on;
+    } else {
+      this.controls.enabled = !on;
+    }
+    this.syncModeToggles();
+  }
+
+  applyErase(removeMap) {
+    if (!this.pending) return;
+    for (const [mesh, faces] of removeMap) {
+      const set = this.pending.selected.get(mesh);
+      if (!set) continue;
+      for (const f of faces) set.delete(f);
+      if (!set.size) this.pending.selected.delete(mesh);
+    }
+    if (!this.pending.selected.size && this.mode === "explore") {
+      this.setEraseMode(false);
+      this.cancelPendingSelection();
+      return;
+    }
+    this.refreshPending();
   }
 
   syncModeToggles() {
     if (!this.ui) return;
     this.ui.addToggle.classList.toggle("active", this.addMode);
     this.ui.subToggle.classList.toggle("active", this.subMode);
-    document.getElementById("ra-add").classList.toggle("active", this.addMode);
-    document.getElementById("ra-sub").classList.toggle("active", this.subMode);
+    const set = (id, on) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle("active", on);
+    };
+    set("ra-add", this.addMode);
+    set("ra-sub", this.subMode);
+    set("lp-erase", this.eraseMode);
+    set("ra-erase", this.eraseMode);
   }
 
   // --- labeling UI -----------------------------------------------------------
@@ -903,6 +948,18 @@ class MeshExplorer {
     this.ui.undoBtn.addEventListener("click", () => this.undoPending());
     this.ui.growBtn.addEventListener("click", () => this.growPending());
     this.ui.shrinkBtn.addEventListener("click", () => this.shrinkPending());
+    document.getElementById("lp-erase").addEventListener("click", () => this.setEraseMode(!this.eraseMode));
+
+    // Paint tools: lasso (mouse) / erase brush (touch) that tidy the pending
+    // selection. Created once; reads pending live via getFaces.
+    this.paint = new PaintTools({
+      domElement: this.renderer.domElement,
+      container: document.getElementById("canvas-container"),
+      camera: this.camera,
+      getFaces: () => (this.pending ? this.pending.selected : null),
+      onGestureStart: () => this.pushPendingHistory(),
+      onErase: (removeMap) => this.applyErase(removeMap),
+    });
     this.ui.deleteBtn.addEventListener("click", () => {
       if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
         const id = this.editingLabelId;
@@ -920,6 +977,7 @@ class MeshExplorer {
     bindTool("ra-undo", () => this.undoPending());
     bindTool("ra-grow", () => this.growPending());
     bindTool("ra-shrink", () => this.shrinkPending());
+    bindTool("ra-erase", () => this.setEraseMode(!this.eraseMode));
     bindTool("ra-discard", () => this.cancelPendingSelection());
     bindTool("ra-delete", () => {
       if (!this.editingLabelId || !this.labels) return;
@@ -946,6 +1004,36 @@ class MeshExplorer {
         this.renderLabelList();
       }
     });
+    // View switcher: mode segments + per-class isolation dots.
+    this.viewMode = "all";
+    this.isolatedClass = null;
+    document.getElementById("view-modes").addEventListener("click", (event) => {
+      const btn = event.target.closest(".view-btn");
+      if (!btn) return;
+      this.viewMode = btn.dataset.view;
+      this.isolatedClass = null;
+      this.syncViewUI();
+      if (this.labels) {
+        this.labels.applyView({ mode: this.viewMode, classId: null });
+      }
+    });
+    const classRow = document.getElementById("view-classes");
+    for (const cls of LABEL_CLASSES) {
+      const b = document.createElement("button");
+      b.className = "class-dot-btn";
+      b.title = `Show only ${cls.name}`;
+      b.dataset.cls = cls.id;
+      b.style.background = cls.color;
+      b.addEventListener("click", () => {
+        this.isolatedClass = this.isolatedClass === cls.id ? null : cls.id;
+        this.syncViewUI();
+        if (this.labels) {
+          this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
+        }
+      });
+      classRow.appendChild(b);
+    }
+
     // Delegated delete buttons — the list is re-rendered wholesale.
     this.ui.list.addEventListener("click", (event) => {
       const id = event.target?.dataset?.del;
@@ -954,6 +1042,18 @@ class MeshExplorer {
         this.renderLabelList();
       }
     });
+  }
+
+  syncViewUI() {
+    for (const b of document.getElementById("view-modes").children) {
+      b.classList.toggle(
+        "active",
+        !this.isolatedClass && b.dataset.view === this.viewMode
+      );
+    }
+    for (const b of document.getElementById("view-classes").children) {
+      b.classList.toggle("active", b.dataset.cls === this.isolatedClass);
+    }
   }
 
   pickClass(id) {
@@ -1020,6 +1120,19 @@ class MeshExplorer {
     this.ui.card.classList.add("active");
     const labels = this.labels.list;
     this.ui.count.textContent = String(labels.length);
+    // Re-assert the active view filter (review mode and mutations both
+    // touch overlay visibility) + refresh area coverage off the hot path.
+    this.labels.applyView();
+    const covEl = document.getElementById("labels-coverage");
+    if (labels.length) {
+      const compute = () => {
+        covEl.textContent = `${this.labels.coverage().toFixed(0)}% covered`;
+      };
+      if (window.requestIdleCallback) requestIdleCallback(compute);
+      else setTimeout(compute, 50);
+    } else {
+      covEl.textContent = "";
+    }
     // Keep the Review entry point visible even with nothing to review —
     // hiding it entirely made the mode undiscoverable.
     this.ui.reviewBtn.disabled = !labels.length;
@@ -1366,6 +1479,7 @@ class MeshExplorer {
         nativeCap: this.streamProfile.nativeCap,
         totalCap: this.streamProfile.totalCap,
         keepDist: this.streamProfile.keepDist,
+        maxAnisotropy: Math.min(8, this.renderer.capabilities.getMaxAnisotropy()),
       });
       const tileCount = await this.streamer.load(highResUrl, this.currentMesh);
       console.log(`High-res streaming active: ${tileCount} tiles`);
@@ -1517,6 +1631,23 @@ class MeshExplorer {
       this.review.updateFrame(); // tween + orbit damping
     } else {
       this.controls.update();
+    }
+
+    // Camera speed (units/sec, smoothed) feeds the streamer's motion gate so
+    // texture work never lands during a fly-through.
+    if (this.streamer) {
+      const nowM = performance.now();
+      this._camPos = this._camPos || this.camera.position.clone();
+      if (this._camT) {
+        const dt = (nowM - this._camT) / 1000;
+        if (dt > 0) {
+          const inst = this.camera.position.distanceTo(this._camPos) / dt;
+          this._camSpeed = (this._camSpeed || 0) * 0.7 + inst * 0.3;
+          this.streamer.setMotion(this._camSpeed);
+        }
+      }
+      this._camPos.copy(this.camera.position);
+      this._camT = nowM;
     }
 
     // Don't try to render on a lost context - it just spams GL errors until

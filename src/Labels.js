@@ -60,8 +60,16 @@ function deltaDecode(deltas) {
   return out;
 }
 
-// Build a single world-space overlay mesh from {t: tileIndex, df: deltas}
-// records, offset along each face's geometric normal.
+// Quantum for merging overlay boundary-edge endpoints across UV seams and
+// tile borders (world scene units, ~4mm) — matches the selector's stitch
+// scale so a physically continuous label reads as one clean outline.
+const OUTLINE_Q = 0.004;
+
+// Build a world-space overlay for {t, df} records: a translucent fill plus a
+// crisp boundary outline (the edges that belong to exactly one selected
+// face, quantized so seams/tile-borders don't show as internal lines). The
+// outline is a child LineSegments of the fill mesh, so existing code that
+// toggles/《colours the fill Mesh keeps working; the outline follows.
 function buildFacesMesh(tileMeshes, tiles, colorHex) {
   const positions = [];
   const va = new THREE.Vector3();
@@ -70,6 +78,18 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
   const e1 = new THREE.Vector3();
   const e2 = new THREE.Vector3();
   const n = new THREE.Vector3();
+
+  // edge key -> { count, a:[x,y,z], b:[x,y,z] } over offset world positions
+  const edges = new Map();
+  const q = (x) => Math.round(x / OUTLINE_Q);
+  const addEdge = (p1, p2) => {
+    const k1 = `${q(p1[0])},${q(p1[1])},${q(p1[2])}`;
+    const k2 = `${q(p2[0])},${q(p2[1])},${q(p2[2])}`;
+    const key = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+    const e = edges.get(key);
+    if (e) e.count++;
+    else edges.set(key, { count: 1, a: p1, b: p2 });
+  };
 
   for (const { t, df } of tiles) {
     const mesh = tileMeshes[t];
@@ -87,11 +107,13 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
       n.crossVectors(e1.subVectors(vb, va), e2.subVectors(vc, va))
         .normalize()
         .multiplyScalar(OVERLAY_OFFSET);
-      positions.push(
-        va.x + n.x, va.y + n.y, va.z + n.z,
-        vb.x + n.x, vb.y + n.y, vb.z + n.z,
-        vc.x + n.x, vc.y + n.y, vc.z + n.z
-      );
+      const A = [va.x + n.x, va.y + n.y, va.z + n.z];
+      const B = [vb.x + n.x, vb.y + n.y, vb.z + n.z];
+      const C = [vc.x + n.x, vc.y + n.y, vc.z + n.z];
+      positions.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2]);
+      addEdge(A, B);
+      addEdge(B, C);
+      addEdge(C, A);
     }
   }
 
@@ -109,6 +131,26 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
   const mesh = new THREE.Mesh(geom, mat);
   mesh.renderOrder = OVERLAY_RENDER_ORDER;
   mesh.raycast = () => {}; // overlays must never swallow selection raycasts
+
+  // boundary outline: edges seen exactly once
+  const linePos = [];
+  for (const e of edges.values()) {
+    if (e.count === 1) linePos.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+  }
+  if (linePos.length) {
+    const lgeom = new THREE.BufferGeometry();
+    lgeom.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
+    const lmat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const line = new THREE.LineSegments(lgeom, lmat);
+    line.renderOrder = OVERLAY_RENDER_ORDER + 1;
+    line.raycast = () => {};
+    mesh.add(line); // child: hidden with the fill, coloured alongside it
+  }
   return mesh;
 }
 
@@ -159,6 +201,57 @@ export class LabelManager {
 
   storageKey() {
     return `dmt:labels:${this.mapKey}`;
+  }
+
+  // --- view filtering --------------------------------------------------------
+  // "all": overlays in class colors. "untagged": labeled areas dimmed to
+  // near-ink so REMAINING work pops. "confirmed"/"proposals": filter by
+  // confidence. classId (isolation) overrides the mode.
+  applyView(view) {
+    if (view) this.currentView = view;
+    for (const label of this.labels) this.applyViewToOverlay(label);
+  }
+
+  applyViewToOverlay(label) {
+    const overlay = this.overlays.get(label.id);
+    if (!overlay) return;
+    const v = this.currentView || { mode: "all", classId: null };
+    const cls = LABEL_CLASSES.find((c) => c.id === label.class);
+    let visible = true;
+    let dim = false;
+    if (v.classId) visible = label.class === v.classId;
+    else if (v.mode === "untagged") dim = true;
+    else if (v.mode === "confirmed") visible = label.confidence === "confirmed";
+    else if (v.mode === "proposals") visible = label.confidence === "flagged";
+    overlay.visible = visible;
+    const color = dim ? "#191C19" : cls ? cls.color : "#ffffff";
+    overlay.material.color.set(color);
+    overlay.material.opacity = dim ? 0.5 : 0.42;
+    const outline = overlay.children[0];
+    if (outline) {
+      outline.material.color.set(color);
+      outline.material.opacity = dim ? 0.35 : 0.95; // outline recedes when dimmed
+    }
+  }
+
+  // Area-weighted labeled fraction (scene units²). Total mesh area is
+  // computed once and cached; overlapping labels can nudge past 100 — clamp.
+  coverage() {
+    if (this._totalArea == null) {
+      let total = 0;
+      for (const mesh of this.tileMeshes) {
+        const index = mesh.geometry.index;
+        const faceCount = index
+          ? index.count / 3
+          : mesh.geometry.getAttribute("position").count / 3;
+        const all = new Array(faceCount);
+        for (let f = 0; f < faceCount; f++) all[f] = f;
+        total += worldArea(mesh, all);
+      }
+      this._totalArea = total || 1;
+    }
+    const labeled = this.labels.reduce((s, l) => s + (l.area || 0), 0);
+    return Math.min(100, (labeled / this._totalArea) * 100);
   }
 
   get list() {
@@ -248,6 +341,7 @@ export class LabelManager {
         this.scene.remove(overlay);
         overlay.geometry.dispose();
         overlay.material.dispose();
+        overlay.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
         this.overlays.delete(label.id);
       }
     }
@@ -262,6 +356,7 @@ export class LabelManager {
       this.scene.remove(overlay);
       overlay.geometry.dispose();
       overlay.material.dispose();
+      overlay.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
       this.overlays.delete(id);
     }
     this.labels = this.labels.filter((l) => l.id !== id);
@@ -331,6 +426,7 @@ export class LabelManager {
       this.scene.remove(overlay);
       overlay.geometry.dispose();
       overlay.material.dispose();
+      overlay.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
       this.overlays.delete(id);
     }
     this.paint(label);
@@ -354,6 +450,7 @@ export class LabelManager {
       this.scene.remove(overlay);
       overlay.geometry.dispose();
       overlay.material.dispose();
+      overlay.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
       this.overlays.delete(id);
     }
     this.paint(label);
@@ -416,6 +513,7 @@ export class LabelManager {
       this.scene.remove(overlay);
       overlay.geometry.dispose();
       overlay.material.dispose();
+      overlay.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
     }
     this.overlays.clear();
     this.labels = [];
@@ -428,6 +526,7 @@ export class LabelManager {
     if (!mesh) return;
     this.scene.add(mesh);
     this.overlays.set(label.id, mesh);
+    if (this.currentView) this.applyViewToOverlay(label); // honor the active filter
   }
 
   // --- persistence & export -------------------------------------------------

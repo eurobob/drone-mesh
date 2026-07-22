@@ -337,6 +337,37 @@
       cursor: pointer;
     }
     #labels-count { color: var(--ink-soft); font-weight: 600; }
+    .coverage { font-size: 11px; color: var(--confirm); font-weight: 700; }
+    .view-row {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 2px 0 8px;
+    }
+    .view-btn {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-soft);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .view-btn.active { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .class-dot-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 2px solid var(--line);
+      cursor: pointer;
+      padding: 0;
+      flex: none;
+    }
+    .class-dot-btn.active { border-color: var(--ink); transform: scale(1.15); }
     #labels-list { max-height: 34vh; overflow-y: auto; }
     .label-row {
       display: flex;
@@ -417,6 +448,7 @@
       <button id="lp-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
       <button id="lp-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
       <button id="lp-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
+      <button id="lp-erase" class="tool-btn" title="Tidy: lasso (mouse) or brush (touch) to remove"><span>⌫</span>Erase</button>
     </div>
     <div class="action-row">
       <div id="lp-conf" class="conf-row"></div>
@@ -432,12 +464,20 @@
     <div class="lc-head">
       <strong>Labels</strong>
       <span id="labels-count">0</span>
+      <span id="labels-coverage" class="coverage"></span>
       <span class="lp-spacer"></span>
       <button id="labels-auto" class="ghost-btn" title="Segment and classify the whole map as review proposals">✨ Auto-tag</button>
       <button id="labels-review" class="ghost-btn">▶ Review</button>
       <button id="labels-export" class="ghost-btn">Export</button>
       <button id="labels-clear" class="ghost-btn">Clear</button>
     </div>
+    <div class="view-row" id="view-modes">
+      <button class="view-btn active" data-view="all">All</button>
+      <button class="view-btn" data-view="untagged" title="Dim labeled areas so remaining work stands out">Untagged</button>
+      <button class="view-btn" data-view="confirmed" title="Show only confirmed labels">✓</button>
+      <button class="view-btn" data-view="proposals" title="Show only flagged proposals">⚑</button>
+    </div>
+    <div class="view-row" id="view-classes"></div>
     <div id="labels-list"></div>
   </div>
 
@@ -462,6 +502,7 @@
       <button id="ra-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
       <button id="ra-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
       <button id="ra-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
+      <button id="ra-erase" class="tool-btn" title="Tidy: lasso (mouse) or brush (touch) to remove"><span>⌫</span>Erase</button>
     </div>
     <div class="action-row" id="ra-verbs">
       <button id="ra-flag" class="btn-quiet">⚑ Flag</button>

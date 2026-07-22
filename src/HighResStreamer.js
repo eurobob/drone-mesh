@@ -63,8 +63,14 @@ const ATLAS_UNLOAD_DIST = 16; // default keep-resident boundary (profile may wid
 const ZONE_GRID = 12; // cluster zones per axis over the map footprint
 const CLUSTER_ON_DIST = 6; // reveal radius for enhanced clusters (×1.25 hysteresis)
 
+// Motion gate (scene units / second). Above HI the streamer idles; it
+// resumes below LO. The gap is hysteresis so ordinary WASD nudging doesn't
+// toggle it every frame.
+const MOTION_HI = 3.5;
+const MOTION_LO = 1.2;
+
 export class HighResStreamer {
-  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap, keepDist }) {
+  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap, keepDist, maxAnisotropy }) {
     this.scene = scene;
     this.camera = camera;
     this.gltfLoader = gltfLoader;
@@ -102,6 +108,25 @@ export class HighResStreamer {
     // textures + mipmap generation in a single frame is what caused visible
     // hitches during the initial sharpen-up.
     this.uploadQueue = [];
+
+    // Motion gating: during fast fly-through the streamer idles completely —
+    // no decode, no upload — so navigation is never interrupted by texture
+    // work. Detail streams in once the camera settles. Hysteresis (HI/LO)
+    // stops the gate flickering at walking pace. camSpeed is fed per-frame.
+    this.camSpeed = 0;
+    this.motionHold = false;
+    this.maxAnisotropy = maxAnisotropy || 1;
+
+    // Shared 1×1 placeholder so every page material is compiled WITH a map
+    // slot from the start. Swapping in the real texture then never triggers a
+    // shader recompile — those first-time null→map recompiles were a second,
+    // subtler source of fly-through hitching (one per page, ever).
+    this.placeholderTex = new THREE.DataTexture(
+      new Uint8Array([200, 200, 200, 255]),
+      1,
+      1
+    );
+    this.placeholderTex.needsUpdate = true;
 
     // Review-mode overrides. focusTiles/prefetchTiles (arrays of tile indices)
     // replace camera proximity as the "wanted" strategy: focus = the item
@@ -372,6 +397,12 @@ export class HighResStreamer {
       pageMat.polygonOffset = true;
       pageMat.polygonOffsetFactor = -1;
       pageMat.polygonOffsetUnits = -1;
+      // Compile the program WITH a map slot now (placeholder) so the real
+      // texture swap later never recompiles the shader mid-fly-through.
+      if (!pageMat.map) {
+        pageMat.map = this.placeholderTex;
+        pageMat.needsUpdate = true;
+      }
       t.mesh.material = [pageMat, this.hiddenMat];
       t.pageMat = pageMat;
       t.clusters = clusters;
@@ -596,19 +627,36 @@ export class HighResStreamer {
     }
   }
 
+  // Per-frame camera speed (units/sec) from the main loop drives the gate.
+  setMotion(speed) {
+    this.camSpeed = speed;
+    if (this.motionHold) {
+      if (speed < MOTION_LO) this.motionHold = false;
+    } else if (speed > MOTION_HI) {
+      this.motionHold = true;
+    }
+  }
+
   update() {
     if (!this.active || !this.tiles.length) return;
     this.computeTargets();
 
-    // Upgrades wanted, most-visible first — the 3-wide decode queue fills
-    // with what the user is looking at. Resident tiles above their target
-    // (native drifting into the ring) are left alone: no downgrade churn;
-    // they demote fully when they leave the ring.
-    const wantUp = this.tiles.filter(
-      (t) => t.bytes && !t.decoding && t.targetSize > t.size
-    );
-    wantUp.sort((a, b) => (a._score || 0) - (b._score || 0));
-    for (const t of wantUp) this.promote(t);
+    // Targets + demotion + reveal always run (cheap, keep memory bounded and
+    // the view correct). Only the EXPENSIVE work — decode + upload — is gated
+    // on motion, so a fly-through never pays texture cost mid-flight. The gate
+    // is IGNORED in review focus mode: the queue pins a tiny explicit tile set
+    // and the inter-item camera tween must not suppress its prefetch.
+    if (!this.motionHold || this.focusTiles) {
+      // Upgrades wanted, most-visible first — the 3-wide decode queue fills
+      // with what the user is looking at. Resident tiles above their target
+      // (native drifting into the ring) are left alone: no downgrade churn;
+      // they demote fully when they leave the ring.
+      const wantUp = this.tiles.filter(
+        (t) => t.bytes && !t.decoding && t.targetSize > t.size
+      );
+      wantUp.sort((a, b) => (a._score || 0) - (b._score || 0));
+      for (const t of wantUp) this.promote(t);
+    }
 
     for (const t of this.tiles) {
       t.wanted = t.targetSize > 0;
@@ -675,8 +723,11 @@ export class HighResStreamer {
   }
 
   // Called once per rendered frame from the main loop: upload at most one
-  // decoded texture per frame so sharpening never stalls the camera.
+  // decoded texture per frame so sharpening never stalls the camera. Skipped
+  // entirely while the camera is moving fast (motion gate) — texture uploads
+  // are the single most expensive main-thread op and must never land mid-fly.
   drainUploads() {
+    if (this.motionHold && !this.focusTiles) return;
     while (this.uploadQueue.length) {
       const { t, image, size } = this.uploadQueue.shift();
       t.decoding = false;
@@ -698,13 +749,17 @@ export class HighResStreamer {
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
+      tex.anisotropy = this.maxAnisotropy || 1;
       tex.needsUpdate = true;
       // After clustering, material is an ARRAY [pageMat, hidden] — assign to
       // the actual page material, never the array (a plain `.map =` on the
-      // array is a silent no-op that renders clusters untextured).
+      // array is a silent no-op that renders clusters untextured). The
+      // material already has the placeholder map, so swapping in the real
+      // texture does NOT set material.needsUpdate → no shader recompile hitch.
       const mat = t.pageMat || t.mesh.material;
+      const hadMap = !!mat.map;
       mat.map = tex;
-      mat.needsUpdate = true;
+      if (!hadMap) mat.needsUpdate = true; // first map ever → one recompile
       t.texture = tex;
       t.size = size;
       t.state = "high";

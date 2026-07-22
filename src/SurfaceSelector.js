@@ -400,6 +400,21 @@ export class SurfaceSelector {
     const positions = [];
     const tmpV = new THREE.Vector3();
     const fn = new THREE.Vector3();
+    const corner = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+
+    // boundary outline: edges belonging to exactly one selected face, keyed
+    // by quantized world position so tile borders / UV seams read as one loop
+    const edges = new Map();
+    const Q = 0.004;
+    const q = (x) => Math.round(x / Q);
+    const addEdge = (p1, p2) => {
+      const k1 = `${q(p1[0])},${q(p1[1])},${q(p1[2])}`;
+      const k2 = `${q(p2[0])},${q(p2[1])},${q(p2[2])}`;
+      const key = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+      const e = edges.get(key);
+      if (e) e.count++;
+      else edges.set(key, { count: 1, a: p1.slice(), b: p2.slice() });
+    };
 
     for (const [mesh, faceSet] of selected) {
       const entry = this.ensureIntra(mesh);
@@ -407,35 +422,64 @@ export class SurfaceSelector {
 
       for (const f of faceSet) {
         this.faceWorldNormal(mesh, f, fn);
-        const ox = fn.x * 0.02, oy = fn.y * 0.02, oz = fn.z * 0.02;
+        const ox = fn.x * 0.024, oy = fn.y * 0.024, oz = fn.z * 0.024;
         for (let i = 0; i < 3; i++) {
           tmpV.fromBufferAttribute(posAttr, entry.getVertIdx(f, i))
             .applyMatrix4(mesh.matrixWorld);
-          positions.push(tmpV.x + ox, tmpV.y + oy, tmpV.z + oz);
+          corner[i][0] = tmpV.x + ox;
+          corner[i][1] = tmpV.y + oy;
+          corner[i][2] = tmpV.z + oz;
+          positions.push(corner[i][0], corner[i][1], corner[i][2]);
         }
+        addEdge(corner[0], corner[1]);
+        addEdge(corner[1], corner[2]);
+        addEdge(corner[2], corner[0]);
       }
     }
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geom.computeVertexNormals();
 
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xff6b35,
+      color: 0x18a0ff, // active-selection accent, distinct from warm label colors
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.42,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
 
     const mesh = new THREE.Mesh(geom, mat);
     mesh.renderOrder = 999;
+    mesh.raycast = () => {};
+
+    const linePos = [];
+    for (const e of edges.values()) {
+      if (e.count === 1) linePos.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+    }
+    if (linePos.length) {
+      const lgeom = new THREE.BufferGeometry();
+      lgeom.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
+      const lmat = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+      });
+      const line = new THREE.LineSegments(lgeom, lmat);
+      line.renderOrder = 1000;
+      line.raycast = () => {};
+      mesh.add(line);
+    }
     return mesh;
   }
 
   clearHighlight() {
     if (!this.highlightMesh) return;
     this.scene.remove(this.highlightMesh);
+    this.highlightMesh.children.forEach((c) => {
+      c.geometry.dispose();
+      c.material.dispose();
+    });
     this.highlightMesh.geometry.dispose();
     this.highlightMesh.material.dispose();
     this.highlightMesh = null;
