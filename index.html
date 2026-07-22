@@ -302,6 +302,61 @@
       padding: 2px 0 8px;
     }
 
+    /* editing dock (bottom-left, expandable) */
+    #edit-dock {
+      display: none;
+      position: absolute;
+      left: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom));
+      width: 208px;
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 10px;
+      box-sizing: border-box;
+      z-index: 850;
+    }
+    #edit-dock.visible { display: block; }
+    #dock-toggle {
+      display: none;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      font-size: 18px;
+      cursor: pointer;
+    }
+    #edit-dock.collapsed { width: auto; padding: 0; background: none; box-shadow: none; }
+    #edit-dock.collapsed .dock-body { display: none; }
+    #edit-dock.collapsed #dock-toggle { display: block; }
+    .dock-group { margin-bottom: 9px; }
+    .dock-group:last-child { margin-bottom: 0; }
+    .dock-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      margin-bottom: 5px;
+    }
+    .seg { display: flex; gap: 4px; }
+    .seg-btn {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .seg-btn.active { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .seg-btn:disabled { opacity: 0.4; }
+
     /* labels card (top right) */
     #labels-card {
       display: none;
@@ -442,20 +497,51 @@
   <div id="label-panel" class="sheet">
     <div id="lp-summary" class="sheet-summary"></div>
     <div id="lp-classes" class="option-grid active"></div>
-    <div class="tool-row">
-      <button id="lp-add" class="tool-btn" title="Merge more surfaces (Shift+Click)"><span>+</span>Add</button>
-      <button id="lp-sub" class="tool-btn" title="Remove a region (Alt+Click)"><span>−</span>Remove</button>
-      <button id="lp-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
-      <button id="lp-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
-      <button id="lp-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
-      <button id="lp-erase" class="tool-btn" title="Tidy: lasso (mouse) or brush (touch) to remove"><span>⌫</span>Erase</button>
-    </div>
     <div class="action-row">
       <div id="lp-conf" class="conf-row"></div>
       <span class="lp-spacer"></span>
       <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
       <button id="lp-cancel" class="btn-quiet">Cancel</button>
       <button id="lp-save" class="btn-primary">Save label</button>
+    </div>
+  </div>
+
+  <!-- editing dock: how you edit, tucked in a corner, expandable -->
+  <div id="edit-dock">
+    <button id="dock-toggle" title="Editing tools">✎</button>
+    <div class="dock-body">
+      <div class="dock-group">
+        <span class="dock-label">Intent</span>
+        <div class="seg">
+          <button data-intent="add" class="seg-btn active">Add</button>
+          <button data-intent="remove" class="seg-btn">Remove</button>
+        </div>
+      </div>
+      <div class="dock-group">
+        <span class="dock-label">Tool</span>
+        <div class="seg">
+          <button data-tool="tap" class="seg-btn active" title="Tap a surface">Tap</button>
+          <button data-tool="brush" class="seg-btn" title="Drag a brush">Brush</button>
+          <button data-tool="lasso" class="seg-btn" title="Draw a loop">Lasso</button>
+        </div>
+      </div>
+      <div class="dock-group">
+        <span class="dock-label">Refine</span>
+        <div class="seg">
+          <button id="dock-undo" class="seg-btn">↩ Undo</button>
+          <button id="dock-grow" class="seg-btn">⊕ Grow</button>
+          <button id="dock-shrink" class="seg-btn">⊖ Shrink</button>
+        </div>
+      </div>
+      <div class="dock-group">
+        <span class="dock-label">Focus view</span>
+        <div class="seg">
+          <button data-view3d="top" class="seg-btn">Top</button>
+          <button data-view3d="front" class="seg-btn">Front</button>
+          <button data-view3d="side" class="seg-btn">Side</button>
+          <button data-view3d="reset" class="seg-btn">3/4</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -496,14 +582,6 @@
       <span class="hero-chev">change</span>
     </button>
     <div id="ra-reclass" class="option-grid"></div>
-    <div class="tool-row" id="ra-tools">
-      <button id="ra-add" class="tool-btn" title="Tap surfaces to add"><span>+</span>Add</button>
-      <button id="ra-sub" class="tool-btn" title="Tap regions to remove"><span>−</span>Remove</button>
-      <button id="ra-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
-      <button id="ra-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
-      <button id="ra-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
-      <button id="ra-erase" class="tool-btn" title="Tidy: lasso (mouse) or brush (touch) to remove"><span>⌫</span>Erase</button>
-    </div>
     <div class="action-row" id="ra-verbs">
       <button id="ra-flag" class="btn-quiet">⚑ Flag</button>
       <button id="ra-skip" class="btn-quiet">Skip →</button>

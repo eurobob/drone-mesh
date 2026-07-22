@@ -53,7 +53,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "paint-1";
+const BUILD_VERSION = "edit-dock-1";
 
 class MeshExplorer {
   constructor() {
@@ -80,7 +80,6 @@ class MeshExplorer {
     this.selector = null;
     this.labels = null;
     this.pending = null;
-    this.addMode = false;
 
     // "explore" = free-roam + click-to-label; "review" = one queue item at a
     // time under an orbit camera with scoped tile rendering.
@@ -90,8 +89,12 @@ class MeshExplorer {
 
     // Selection refinement state: subtract mode, undo history (snapshots of
     // the pending face map, capped), and the label being edited in place.
-    this.subMode = false;
-    this.eraseMode = false;
+    // Editing model: two orthogonal axes. Intent = what a gesture does
+    // (add / remove); Tool = how you point (tap / brush / lasso). Tap uses
+    // the flood-fill click path; brush/lasso hand off to PaintTools. Both
+    // tools honor the current intent, so lasso/brush can add OR remove.
+    this.editIntent = "add";
+    this.editTool = "tap";
     this.paint = null;
     this.pendingHistory = [];
     this.editingLabelId = null;
@@ -284,8 +287,8 @@ class MeshExplorer {
         if (dx * dx + dy * dy > 25) return; // moved >5px: that was a look, not a click
       }
       this.handleSurfaceSelection(event.clientX, event.clientY, {
-        add: event.shiftKey || this.addMode,
-        sub: event.altKey || this.subMode,
+        add: event.shiftKey, // momentary overrides; intent axis is the default
+        sub: event.altKey,
       });
     });
 
@@ -297,10 +300,7 @@ class MeshExplorer {
         // Use timeout to distinguish tap from drag
         if (tapTimeout) clearTimeout(tapTimeout);
         tapTimeout = setTimeout(() => {
-          this.handleSurfaceSelection(touch.clientX, touch.clientY, {
-            add: this.addMode,
-            sub: this.subMode,
-          });
+          this.handleSurfaceSelection(touch.clientX, touch.clientY, {});
         }, 100);
       }
     });
@@ -352,14 +352,21 @@ class MeshExplorer {
     this.initLabelUI();
   }
 
-  handleSurfaceSelection(clientX, clientY, mods = {}) {
-    if (this.eraseMode) return; // paint tool owns the pointer while erasing
+  handleSurfaceSelection(clientX, clientY, rawMods = {}) {
+    if (this.editTool !== "tap") return; // brush/lasso own the pointer
     const adjusting = this.mode === "review" && this.reviewAdjust;
     if (this.mode !== "explore" && !adjusting) return;
     if (!this.currentMesh || !this.selector) return;
-    // While adjusting a review item, plain taps ADD (subtract via toggle) —
-    // a stray tap must never abandon the edit or start a new label.
-    if (adjusting && !mods.sub) mods = { ...mods, add: true };
+
+    // Resolve add/remove: Shift/Alt are momentary overrides of the current
+    // intent; otherwise the intent axis decides. Extending an existing
+    // selection with tap defaults to the intent; a first tap always starts
+    // fresh. In review adjust, a bare tap must never abandon the item.
+    const mods = {
+      add: rawMods.add || (!rawMods.sub && this.editIntent === "add"),
+      sub: rawMods.sub || (!rawMods.add && this.editIntent === "remove"),
+    };
+    if (adjusting && !this.pending) return; // shouldn't happen; guard
 
     // Convert screen coordinates to normalized device coordinates
     this.mouse.x = (clientX / window.innerWidth) * 2 - 1;
@@ -372,14 +379,12 @@ class MeshExplorer {
     // so face indices stay valid. (three's raycaster ignores `visible`, which
     // is exactly what we want for tiles whose low-res twin is hidden.)
     const intersects = this.raycaster.intersectObject(this.currentMesh, true);
-    if (!intersects.length) {
-      if (!mods.add && !mods.sub && !adjusting) this.cancelPendingSelection();
-      return;
-    }
+    if (!intersects.length) return; // empty space: leave selection; Cancel/Esc clears
     const hit = intersects[0];
 
-    // Click on an existing label with no pending selection = edit it.
-    if (!this.pending && !mods.add && !mods.sub && this.labels) {
+    // Tap with no pending selection: edit an existing label if we hit one,
+    // else start a fresh selection.
+    if (!this.pending && !adjusting && this.labels) {
       const owner = this.labels.findLabelAt(hit.object, hit.faceIndex);
       if (owner) {
         this.enterEditLabel(owner);
@@ -448,6 +453,7 @@ class MeshExplorer {
     } else {
       this.showLabelPanel();
     }
+    this.syncDock();
   }
 
   pushPendingHistory() {
@@ -512,10 +518,12 @@ class MeshExplorer {
     this.pickConfidence(item.label.confidence);
     this.selector.showFaces(this.pending.selected);
     this.updateReviewSheet();
+    this.showDock(true);
   }
 
   quietDisarm() {
-    this.setEraseMode(false);
+    this.setTool("tap");
+    this.editIntent = "add";
     if (this.editingLabelId && this.labels) {
       this.labels.setOverlayVisible(this.editingLabelId, true);
     }
@@ -524,8 +532,7 @@ class MeshExplorer {
     this.pendingHistory = [];
     this.pendingDirty = false;
     if (this.selector) this.selector.clearHighlight();
-    this.setAddMode(false);
-    this.setSubMode(false);
+    this.showDock(false);
   }
 
   updateReviewSheet() {
@@ -537,7 +544,7 @@ class MeshExplorer {
     ui.flag.style.display = dirty ? "none" : "";
     ui.skip.style.display = dirty ? "none" : "";
     ui.correct.textContent = dirty ? "✓ Save changes" : "✓ Confirm";
-    document.getElementById("ra-undo").disabled = this.pendingHistory.length === 0;
+    this.syncDock();
     const cls = LABEL_CLASSES.find((c) => c.id === this.pickedClass);
     if (cls) {
       ui.klass.textContent = cls.name;
@@ -597,7 +604,8 @@ class MeshExplorer {
   }
 
   cancelPendingSelection() {
-    this.setEraseMode(false);
+    this.setTool("tap");
+    this.editIntent = "add";
     // In review, "cancel" means discard edits: re-present the item fresh.
     if (this.mode === "review" && this.reviewAdjust && this.review) {
       this.review.show(this.review.index);
@@ -607,8 +615,7 @@ class MeshExplorer {
     this.pending = null;
     this.pendingHistory = [];
     if (this.selector) this.selector.clearHighlight();
-    this.setAddMode(false);
-    this.setSubMode(false);
+    this.showDock(false);
     if (this.ui) this.ui.panel.classList.remove("active");
   }
 
@@ -838,62 +845,174 @@ class MeshExplorer {
     this.renderLabelList();
   }
 
-  setAddMode(on) {
-    this.addMode = on;
-    if (on) { this.subMode = false; this.setEraseMode(false); }
-    this.syncModeToggles();
+  setIntent(intent) {
+    this.editIntent = intent;
+    if (this.paint) this.paint.setIntent(intent);
+    this.syncDock();
   }
 
-  setSubMode(on) {
-    this.subMode = on;
-    if (on) { this.addMode = false; this.setEraseMode(false); }
-    this.syncModeToggles();
-  }
-
-  // Erase mode hands the pointer to PaintTools (lasso on mouse, brush on
-  // touch) and locks the active camera controller so the gesture is ours.
-  setEraseMode(on) {
-    on = !!on && !!this.pending; // nothing to tidy without a selection
-    if (on === this.eraseMode) return;
-    this.eraseMode = on;
-    if (on) { this.addMode = false; this.subMode = false; }
-    if (this.paint) this.paint.setEnabled(on);
+  // Tool selection also governs the camera: tap leaves navigation free
+  // (you move between clicks); brush/lasso lock the active controller so the
+  // gesture is ours. Reset to tap whenever a selection ends.
+  setTool(tool) {
+    // brush/lasso need a selection to act on
+    if ((tool === "brush" || tool === "lasso") && !this.pending) tool = "tap";
+    this.editTool = tool;
+    if (this.paint) {
+      this.paint.setIntent(this.editIntent);
+      this.paint.setTool(tool);
+    }
+    const locked = tool === "brush" || tool === "lasso";
     if (this.mode === "review") {
-      if (this.orbit) this.orbit.enabled = !on;
-    } else {
-      this.controls.enabled = !on;
+      if (this.orbit) this.orbit.enabled = !locked;
+    } else if (this.controls) {
+      this.controls.enabled = !locked;
     }
-    this.syncModeToggles();
+    this.syncDock();
   }
 
-  applyErase(removeMap) {
+  // Apply a paint gesture's hit faces per intent (add merges, remove deletes).
+  applyPaint(intent, map) {
     if (!this.pending) return;
-    for (const [mesh, faces] of removeMap) {
-      const set = this.pending.selected.get(mesh);
-      if (!set) continue;
-      for (const f of faces) set.delete(f);
-      if (!set.size) this.pending.selected.delete(mesh);
-    }
-    if (!this.pending.selected.size && this.mode === "explore") {
-      this.setEraseMode(false);
-      this.cancelPendingSelection();
-      return;
+    if (intent === "add") {
+      for (const [mesh, faces] of map) {
+        let set = this.pending.selected.get(mesh);
+        if (!set) { set = new Set(); this.pending.selected.set(mesh, set); }
+        for (const f of faces) set.add(f);
+      }
+    } else {
+      for (const [mesh, faces] of map) {
+        const set = this.pending.selected.get(mesh);
+        if (!set) continue;
+        for (const f of faces) set.delete(f);
+        if (!set.size) this.pending.selected.delete(mesh);
+      }
+      if (!this.pending.selected.size && this.mode === "explore") {
+        this.setTool("tap");
+        this.cancelPendingSelection();
+        return;
+      }
     }
     this.refreshPending();
   }
 
-  syncModeToggles() {
-    if (!this.ui) return;
-    this.ui.addToggle.classList.toggle("active", this.addMode);
-    this.ui.subToggle.classList.toggle("active", this.subMode);
-    const set = (id, on) => {
-      const el = document.getElementById(id);
-      if (el) el.classList.toggle("active", on);
-    };
-    set("ra-add", this.addMode);
-    set("ra-sub", this.subMode);
-    set("lp-erase", this.eraseMode);
-    set("ra-erase", this.eraseMode);
+  // Candidate faces a paint gesture may touch: for remove, the pending set;
+  // for add, visible (in-frustum, front-facing) faces not already selected.
+  paintCandidates(intent) {
+    if (intent === "remove") return this.pending ? this.pending.selected : null;
+    if (!this.currentMesh) return null;
+    const cam = this.camera.position;
+    this.camera.updateMatrixWorld();
+    const pv = new THREE.Matrix4().multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse
+    );
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(pv);
+    const out = new Map();
+    const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+    const c = new THREE.Vector3(), n = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+    let budget = 60000; // bound per-move projection cost
+    this.currentMesh.traverse((mesh) => {
+      if (!mesh.isMesh || budget <= 0) return;
+      const pos = mesh.geometry.getAttribute("position");
+      const index = mesh.geometry.index;
+      const faceCount = index ? index.count / 3 : pos.count / 3;
+      const sel = this.pending && this.pending.selected.get(mesh);
+      const vi = (f, k) => (index ? index.getX(f * 3 + k) : f * 3 + k);
+      for (let f = 0; f < faceCount; f++) {
+        if (budget <= 0) break;
+        if (sel && sel.has(f)) continue;
+        va.fromBufferAttribute(pos, vi(f, 0)).applyMatrix4(mesh.matrixWorld);
+        vb.fromBufferAttribute(pos, vi(f, 1)).applyMatrix4(mesh.matrixWorld);
+        vc.fromBufferAttribute(pos, vi(f, 2)).applyMatrix4(mesh.matrixWorld);
+        c.copy(va).add(vb).add(vc).multiplyScalar(1 / 3);
+        if (!frustum.containsPoint(c)) continue;
+        n.crossVectors(e1.subVectors(vb, va), e2.subVectors(vc, va));
+        if (n.dot(e1.subVectors(c, cam)) >= 0) continue; // back-facing → skip
+        let s = out.get(mesh);
+        if (!s) { s = new Set(); out.set(mesh, s); }
+        s.add(f);
+        budget--;
+      }
+    });
+    return out;
+  }
+
+  // Snap the camera onto the current selection from an orthogonal direction
+  // so tools operate on a clean, aligned view (e.g. top-down to paint a roof).
+  focusSelection(dir) {
+    if (!this.pending || !this.pending.selected.size) return;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (const [mesh, faces] of this.pending.selected) {
+      const pos = mesh.geometry.getAttribute("position");
+      const index = mesh.geometry.index;
+      for (const f of faces) {
+        for (let k = 0; k < 3; k++) {
+          const idx = index ? index.getX(f * 3 + k) : f * 3 + k;
+          box.expandByPoint(v.fromBufferAttribute(pos, idx).applyMatrix4(mesh.matrixWorld));
+        }
+      }
+    }
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1);
+    const fov = THREE.MathUtils.degToRad(this.camera.fov);
+    const dist = (radius / Math.tan(fov / 2)) * 1.5;
+    const axis = {
+      top: new THREE.Vector3(0.001, 1, 0.001),
+      front: new THREE.Vector3(0, 0.15, 1),
+      side: new THREE.Vector3(1, 0.15, 0),
+    }[dir] || new THREE.Vector3(0.3, 0.6, 1);
+    axis.normalize();
+    this.camera.position.copy(center).addScaledVector(axis, dist);
+    this.camera.lookAt(center);
+    if (this.mode === "review" && this.orbit) {
+      this.orbit.target.copy(center);
+    } else if (this.controls) {
+      this.controls.syncFromCamera();
+    }
+  }
+
+  // Reflect editing state into the dock + show/hide it with the selection.
+  syncDock() {
+    const dock = document.getElementById("edit-dock");
+    if (!dock) return;
+    dock.classList.toggle("visible", !!this.pending);
+    dock.querySelectorAll("[data-intent]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.intent === this.editIntent)
+    );
+    dock.querySelectorAll("[data-tool]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.tool === this.editTool)
+    );
+    const undo = document.getElementById("dock-undo");
+    if (undo) undo.disabled = this.pendingHistory.length === 0;
+  }
+
+  showDock(on) {
+    const dock = document.getElementById("edit-dock");
+    if (dock) dock.classList.toggle("visible", on);
+    if (on) this.syncDock();
+  }
+
+  setupEditDock() {
+    const dock = document.getElementById("edit-dock");
+    if (!dock) return;
+    document.getElementById("dock-toggle").addEventListener("click", () =>
+      dock.classList.toggle("collapsed")
+    );
+    dock.querySelectorAll("[data-intent]").forEach((b) =>
+      b.addEventListener("click", () => this.setIntent(b.dataset.intent))
+    );
+    dock.querySelectorAll("[data-tool]").forEach((b) =>
+      b.addEventListener("click", () => this.setTool(b.dataset.tool))
+    );
+    dock.querySelectorAll("[data-view3d]").forEach((b) =>
+      b.addEventListener("click", () => this.focusSelection(b.dataset.view3d))
+    );
+    document.getElementById("dock-undo").addEventListener("click", () => this.undoPending());
+    document.getElementById("dock-grow").addEventListener("click", () => this.growPending());
+    document.getElementById("dock-shrink").addEventListener("click", () => this.shrinkPending());
   }
 
   // --- labeling UI -----------------------------------------------------------
@@ -904,11 +1023,6 @@ class MeshExplorer {
       summary: document.getElementById("lp-summary"),
       classes: document.getElementById("lp-classes"),
       conf: document.getElementById("lp-conf"),
-      addToggle: document.getElementById("lp-add"),
-      subToggle: document.getElementById("lp-sub"),
-      undoBtn: document.getElementById("lp-undo"),
-      growBtn: document.getElementById("lp-grow"),
-      shrinkBtn: document.getElementById("lp-shrink"),
       deleteBtn: document.getElementById("lp-delete"),
       save: document.getElementById("lp-save"),
       cancel: document.getElementById("lp-cancel"),
@@ -943,23 +1057,18 @@ class MeshExplorer {
       this.ui.conf.appendChild(b);
     }
 
-    this.ui.addToggle.addEventListener("click", () => this.setAddMode(!this.addMode));
-    this.ui.subToggle.addEventListener("click", () => this.setSubMode(!this.subMode));
-    this.ui.undoBtn.addEventListener("click", () => this.undoPending());
-    this.ui.growBtn.addEventListener("click", () => this.growPending());
-    this.ui.shrinkBtn.addEventListener("click", () => this.shrinkPending());
-    document.getElementById("lp-erase").addEventListener("click", () => this.setEraseMode(!this.eraseMode));
-
-    // Paint tools: lasso (mouse) / erase brush (touch) that tidy the pending
-    // selection. Created once; reads pending live via getFaces.
+    // Paint tools: lasso (mouse) / brush (touch), add OR remove per intent.
+    // Reads candidates live and applies hits through applyPaint.
     this.paint = new PaintTools({
       domElement: this.renderer.domElement,
       container: document.getElementById("canvas-container"),
       camera: this.camera,
-      getFaces: () => (this.pending ? this.pending.selected : null),
+      getCandidates: (intent) => this.paintCandidates(intent),
       onGestureStart: () => this.pushPendingHistory(),
-      onErase: (removeMap) => this.applyErase(removeMap),
+      onApply: (intent, map) => this.applyPaint(intent, map),
     });
+    this.setupEditDock();
+
     this.ui.deleteBtn.addEventListener("click", () => {
       if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
         const id = this.editingLabelId;
@@ -972,12 +1081,6 @@ class MeshExplorer {
 
     // review-sheet controls that live outside ReviewMode's own bindings
     const bindTool = (id, fn) => document.getElementById(id).addEventListener("click", fn);
-    bindTool("ra-add", () => this.setAddMode(!this.addMode));
-    bindTool("ra-sub", () => this.setSubMode(!this.subMode));
-    bindTool("ra-undo", () => this.undoPending());
-    bindTool("ra-grow", () => this.growPending());
-    bindTool("ra-shrink", () => this.shrinkPending());
-    bindTool("ra-erase", () => this.setEraseMode(!this.eraseMode));
     bindTool("ra-discard", () => this.cancelPendingSelection());
     bindTool("ra-delete", () => {
       if (!this.editingLabelId || !this.labels) return;
@@ -1087,9 +1190,9 @@ class MeshExplorer {
       this.pickConfidence("confirmed");
     }
     this.ui.deleteBtn.style.display = editing ? "" : "none";
-    this.ui.undoBtn.disabled = this.pendingHistory.length === 0;
     this.ui.save.textContent = editing ? "Update label" : "Save label";
     this.ui.panel.classList.add("active");
+    this.showDock(true);
   }
 
   saveLabel() {

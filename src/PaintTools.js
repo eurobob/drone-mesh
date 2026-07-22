@@ -29,15 +29,20 @@ export function pointInPolygon(pt, poly) {
 }
 
 export class PaintTools {
-  constructor({ domElement, container, camera, getFaces, onGestureStart, onErase }) {
+  // getCandidates(intent) → Map(mesh → Set(faceIdx)) the gesture may affect:
+  //   "remove" → the current pending faces; "add" → visible unselected faces.
+  // onApply(intent, map) applies the hit faces (host adds or removes).
+  constructor({ domElement, container, camera, getCandidates, onGestureStart, onApply }) {
     this.domElement = domElement;
     this.camera = camera;
-    this.getFaces = getFaces;
+    this.getCandidates = getCandidates;
     this.onGestureStart = onGestureStart || (() => {});
-    this.onErase = onErase || (() => {});
+    this.onApply = onApply || (() => {});
 
+    this.tool = "tap"; // tap (off) | brush | lasso
+    this.intent = "add"; // add | remove
     this.enabled = false;
-    this.gesture = null; // { mode, points, meshes, cx/cy/cz, removed }
+    this.gesture = null;
     this._raf = null;
     this._movePt = null;
 
@@ -71,10 +76,28 @@ export class PaintTools {
     domElement.addEventListener("pointercancel", this._onUp);
   }
 
-  setEnabled(on) {
-    this.enabled = on;
-    this.svg.style.display = on ? "block" : "none";
-    if (!on) this.cancelGesture();
+  // tool: "tap" disables painting (host click handler drives selection);
+  // "brush"/"lasso" enable the pointer overlay.
+  setTool(tool) {
+    this.tool = tool;
+    this.enabled = tool === "brush" || tool === "lasso";
+    this.svg.style.display = this.enabled ? "block" : "none";
+    if (!this.enabled) this.cancelGesture();
+  }
+
+  setIntent(intent) {
+    this.intent = intent;
+    const accent = intent === "add" ? "#18a0ff" : "#C0392B";
+    this.path.setAttribute("stroke", accent);
+    this.path.setAttribute(
+      "fill",
+      intent === "add" ? "rgba(24,160,255,0.15)" : "rgba(192,57,43,0.15)"
+    );
+    this.circle.setAttribute("stroke", accent);
+    this.circle.setAttribute(
+      "fill",
+      intent === "add" ? "rgba(24,160,255,0.18)" : "rgba(192,57,43,0.18)"
+    );
   }
 
   cancelGesture() {
@@ -90,9 +113,9 @@ export class PaintTools {
     return [e.clientX - r.left, e.clientY - r.top, r];
   }
 
-  // Snapshot world-space centroids of every pending face for fast projection.
+  // Snapshot world-space centroids of the candidate faces for fast projection.
   snapshotFaces() {
-    const faces = this.getFaces();
+    const faces = this.getCandidates(this.intent);
     const cx = [], cy = [], cz = [], meshRef = [], faceIdx = [];
     const v = new THREE.Vector3();
     if (faces) {
@@ -116,19 +139,22 @@ export class PaintTools {
 
   onPointerDown(e) {
     if (!this.enabled) return;
-    const faces = this.getFaces();
-    if (!faces || !faces.size) return;
+    const snap = this.snapshotFaces();
+    if (!snap.cx.length) return; // nothing to act on
     e.preventDefault();
     this.domElement.setPointerCapture?.(e.pointerId);
     this.onGestureStart();
-    const mode = e.pointerType === "touch" ? "brush" : "lasso";
     const [x, y] = this.rectPt(e);
-    this.gesture = { mode, ...this.snapshotFaces(), points: [x, y] };
+    // The chosen tool wins; pointer type is a fallback if somehow unset.
+    const mode = this.tool === "brush" || this.tool === "lasso"
+      ? this.tool
+      : e.pointerType === "touch" ? "brush" : "lasso";
+    this.gesture = { mode, ...snap, points: [x, y] };
     if (mode === "brush") {
       this.circle.style.display = "";
       this.circle.setAttribute("cx", x);
       this.circle.setAttribute("cy", y);
-      this.eraseAround(x, y);
+      this.brushAt(x, y);
     }
   }
 
@@ -146,7 +172,7 @@ export class PaintTools {
       if (g.mode === "brush") {
         this.circle.setAttribute("cx", mx);
         this.circle.setAttribute("cy", my);
-        this.eraseAround(mx, my);
+        this.brushAt(mx, my);
       } else {
         g.points.push(mx, my);
         this.path.setAttribute("d", this.pathData(g.points));
@@ -159,7 +185,7 @@ export class PaintTools {
     e.preventDefault?.();
     const g = this.gesture;
     if (g.mode === "lasso" && g.points.length >= 6) {
-      const remove = new Map();
+      const hit = new Map();
       const v = new THREE.Vector3();
       for (let i = 0; i < g.cx.length; i++) {
         if (g.removed.has(i)) continue;
@@ -167,17 +193,17 @@ export class PaintTools {
         if (v.z < -1 || v.z > 1) continue; // behind camera / clipped
         const sx = (v.x * 0.5 + 0.5) * this.domElement.clientWidth;
         const sy = (-v.y * 0.5 + 0.5) * this.domElement.clientHeight;
-        if (pointInPolygon([sx, sy], g.points)) this.mark(remove, g, i);
+        if (pointInPolygon([sx, sy], g.points)) this.mark(hit, g, i);
       }
-      if (remove.size) this.onErase(remove);
+      if (hit.size) this.onApply(this.intent, hit);
     }
     this.cancelGesture();
   }
 
-  // Brush: remove faces whose projected centroid is within the cursor radius.
-  eraseAround(px, py) {
+  // Brush: hit faces whose projected centroid is within the cursor radius.
+  brushAt(px, py) {
     const g = this.gesture;
-    const remove = new Map();
+    const hit = new Map();
     const v = new THREE.Vector3();
     const r2 = BRUSH_RADIUS_PX * BRUSH_RADIUS_PX;
     const w = this.domElement.clientWidth;
@@ -189,16 +215,16 @@ export class PaintTools {
       const sx = (v.x * 0.5 + 0.5) * w;
       const sy = (-v.y * 0.5 + 0.5) * h;
       const dx = sx - px, dy = sy - py;
-      if (dx * dx + dy * dy <= r2) this.mark(remove, g, i);
+      if (dx * dx + dy * dy <= r2) this.mark(hit, g, i);
     }
-    if (remove.size) this.onErase(remove);
+    if (hit.size) this.onApply(this.intent, hit);
   }
 
-  mark(remove, g, i) {
-    g.removed.add(i);
+  mark(hit, g, i) {
+    g.removed.add(i); // "consumed this gesture", regardless of add/remove
     const mesh = g.meshRef[i];
-    let s = remove.get(mesh);
-    if (!s) { s = new Set(); remove.set(mesh, s); }
+    let s = hit.get(mesh);
+    if (!s) { s = new Set(); hit.set(mesh, s); }
     s.add(g.faceIdx[i]);
   }
 
