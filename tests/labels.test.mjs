@@ -95,4 +95,30 @@ assert(mgr2.list[0].faceCount === 2 && mgr2.list[1].faceCount === 1, "face count
 assert(mgr2.overlays.size === 2, "overlays repainted on restore");
 assert(LABEL_CLASSES.some((c) => c.id === "building-roof"), "taxonomy exports");
 
+// --- click-to-edit support ---
+assert(mgr.findLabelAt(roof, 0) === label, "findLabelAt resolves owning label");
+assert(mgr.findLabelAt(ground, 0) === null, "findLabelAt: unlabeled face → null");
+assert(mgr.findLabelAt(ground, 1)?.class === "ground", "findLabelAt on second label");
+
+const decoded = mgr.decodeSelection(label);
+assert(
+  decoded.get(roof)?.size === 2 && decoded.get(roof).has(0) && decoded.get(roof).has(1),
+  "decodeSelection reproduces the stored face set"
+);
+
+const updated = mgr.update(label.id, {
+  selected: new Map([[roof, new Set([0])]]),
+  classId: "vegetation",
+  confidence: "unsure",
+});
+assert(updated.faceCount === 1, "update rewrites geometry");
+assert(updated.class === "vegetation" && updated.confidence === "unsure", "update rewrites class/confidence");
+assert(mgr.overlays.has(label.id), "update repaints the overlay");
+const mgr3 = new LabelManager({ scene: new THREE.Scene(), root, mapKey: "test-map" });
+mgr3.restore();
+assert(
+  mgr3.list.find((l) => l.id === label.id)?.faceCount === 1,
+  "updated label persists"
+);
+
 console.log("\nAll label tests passed.");

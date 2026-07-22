@@ -441,6 +441,108 @@ export class SurfaceSelector {
     this.highlightMesh = null;
   }
 
+  // Grow the selection by one adjacency ring: every edge-neighbour (incl.
+  // across tile borders and UV seams) joins. Deliberately unconstrained by
+  // class/normal — grow is the user's manual override for undershoot.
+  growSelection(selectedMap, root) {
+    this.ensureGlobalGraph(root);
+    const out = new Map();
+    const tmpV = new THREE.Vector3();
+    const bridge = [];
+    for (const [mesh, faces] of selectedMap) out.set(mesh, new Set(faces));
+    const addFace = (mesh, f) => {
+      let s = out.get(mesh);
+      if (!s) {
+        s = new Set();
+        out.set(mesh, s);
+      }
+      s.add(f);
+    };
+    for (const [mesh, faces] of selectedMap) {
+      const entry = this.ensureIntra(mesh);
+      for (const f of faces) {
+        const a = entry.getVertIdx(f, 0);
+        const b = entry.getVertIdx(f, 1);
+        const c = entry.getVertIdx(f, 2);
+        for (const [v1, v2, ek] of [
+          [a, b, entry.edgeKey(a, b)],
+          [b, c, entry.edgeKey(b, c)],
+          [c, a, entry.edgeKey(c, a)],
+        ]) {
+          const neigh = entry.edgeToFaces.get(ek);
+          if (neigh) for (const nf of neigh) if (nf !== f) addFace(mesh, nf);
+          if (
+            (!neigh || neigh.length === 1) &&
+            entry.boundaryVerts.has(v1) &&
+            entry.boundaryVerts.has(v2)
+          ) {
+            bridge.length = 0;
+            this._enqueueCrossTile(mesh, v1, v2, bridge, tmpV);
+            for (const q of bridge) addFace(q.mesh, q.faceIdx);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  // Shrink by one ring: keep only faces whose every edge-neighbour (bridged
+  // neighbours included) is also selected. Faces on a physically open mesh
+  // edge count as boundary and shrink away — standard erosion semantics.
+  shrinkSelection(selectedMap, root) {
+    this.ensureGlobalGraph(root);
+    const has = (mesh, f) => {
+      const s = selectedMap.get(mesh);
+      return s ? s.has(f) : false;
+    };
+    const out = new Map();
+    const tmpV = new THREE.Vector3();
+    const bridge = [];
+    for (const [mesh, faces] of selectedMap) {
+      const entry = this.ensureIntra(mesh);
+      const keep = new Set();
+      for (const f of faces) {
+        let interior = true;
+        const a = entry.getVertIdx(f, 0);
+        const b = entry.getVertIdx(f, 1);
+        const c = entry.getVertIdx(f, 2);
+        for (const [v1, v2, ek] of [
+          [a, b, entry.edgeKey(a, b)],
+          [b, c, entry.edgeKey(b, c)],
+          [c, a, entry.edgeKey(c, a)],
+        ]) {
+          const neigh = entry.edgeToFaces.get(ek);
+          if (neigh && neigh.length > 1) {
+            for (const nf of neigh) {
+              if (nf !== f && !has(mesh, nf)) {
+                interior = false;
+                break;
+              }
+            }
+          } else if (entry.boundaryVerts.has(v1) && entry.boundaryVerts.has(v2)) {
+            bridge.length = 0;
+            this._enqueueCrossTile(mesh, v1, v2, bridge, tmpV);
+            if (bridge.length === 0) interior = false; // true open edge
+            else {
+              for (const q of bridge) {
+                if (!has(q.mesh, q.faceIdx)) {
+                  interior = false;
+                  break;
+                }
+              }
+            }
+          } else {
+            interior = false; // unbridged open edge = selection boundary
+          }
+          if (!interior) break;
+        }
+        if (interior) keep.add(f);
+      }
+      if (keep.size) out.set(mesh, keep);
+    }
+    return out;
+  }
+
   // Display an arbitrary mesh→faceSet map as the current highlight. Used by
   // the labeling flow, which merges several select() results (shift-click)
   // before committing them as one label.

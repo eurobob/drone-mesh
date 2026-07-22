@@ -145,4 +145,23 @@ assert(
   "review verdicts survived the storage roundtrip"
 );
 
+// in-review adjustment support: refresh reframes a mutated label; removing
+// the current item advances the queue
+const review3 = new ReviewMode({ camera, orbit, labels, streamer: null, ui: null });
+assert(review3.enter() === true, "third review session enters");
+const before = review3.cur().bbox.getSize(new THREE.Vector3()).x;
+labels.update(review3.cur().label.id, {
+  selected: new Map([[near, new Set([0])]]), // half the faces
+});
+review3.refreshCurrentItem();
+assert(
+  review3.cur().bbox.getSize(new THREE.Vector3()).x <= before,
+  "refreshCurrentItem recomputes framing from the edited label"
+);
+review3.removeCurrentItem();
+assert(review3.queue.length === 1, "removeCurrentItem drops the deleted item");
+assert(review3.cur() !== undefined || review3.index === review3.queue.length,
+  "queue presents next item or completes");
+review3.exit();
+
 console.log("\nAll review-mode tests passed.");

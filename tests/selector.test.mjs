@@ -63,4 +63,19 @@ assert(r3.targetClass === "wall", `wall classifies wall (got ${r3.targetClass})`
 const r4 = selector.select({ object: meshA, faceIndex: 3 }, root);
 assert(r4.totalSelected === 6, "repeat select via cached graphs still 6 faces");
 
+// --- grow / shrink refinement tools ---
+const count = (map) => [...map.values()].reduce((n, s) => n + s.size, 0);
+
+// grow is unconstrained: crosses the class boundary onto the wall via the
+// shared x=2 edge (one wall face adjoins it, the second follows next ring)
+const g1 = selector.growSelection(r1.selected, root);
+assert(count(g1) === 7, `grow adds the adjoining wall face (got ${count(g1)})`);
+const g2 = selector.growSelection(g1, root);
+assert(count(g2) === 8, `second grow completes the wall (got ${count(g2)})`);
+
+// shrink erodes the boundary ring; on this tiny fixture every flat face
+// touches an open map edge, so one shrink erodes the lot
+const s1 = selector.shrinkSelection(r1.selected, root);
+assert(count(s1) === 0, `shrink erodes boundary faces (got ${count(s1)})`);
+
 console.log("\nAll selector tests passed.");

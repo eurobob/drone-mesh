@@ -2,17 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Drone Mesh Explorer</title>
   <style>
-    html, body {
-      height: 100%;
+    /* ============ instrument tokens ============ */
+    :root {
+      --surface: #FFFFFF;
+      --surface-dim: #F1F2EE;
+      --ink: #191C19;
+      --ink-soft: #6A6F67;
+      --line: #E1E3DD;
+      --confirm: #1F7A33;
+      --danger: #C0392B;
+      --radius: 16px;
+      --radius-s: 10px;
+      --shadow: 0 10px 36px rgba(18, 22, 16, 0.22);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     }
+
+    html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: Arial, sans-serif;
-      /* position:fixed is the reliable iOS recipe: absolutely no page
-         scrolling or rubber-banding, ever — the app owns all gestures. */
+      font-family: var(--font);
       position: fixed;
       inset: 0;
       width: 100%;
@@ -22,9 +33,14 @@
     #canvas-container {
       width: 100vw;
       height: 100vh;
-      height: 100dvh; /* track the real visible viewport on mobile */
+      height: 100dvh;
       touch-action: none;
     }
+    button { font-family: var(--font); }
+    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    button:disabled { opacity: 0.35; cursor: default; }
+
+    /* ============ dev instrumentation stays dark ============ */
     #info {
       position: absolute;
       top: 10px;
@@ -33,24 +49,19 @@
       color: white;
       padding: 10px;
       border-radius: 5px;
-      font-size: 14px;
+      font-size: 13px;
     }
     #loading-overlay {
       display: none;
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      inset: 0;
       background: rgba(0, 0, 0, 0.8);
       z-index: 1000;
       justify-content: center;
       align-items: center;
       flex-direction: column;
     }
-    #loading-overlay.active {
-      display: flex;
-    }
+    #loading-overlay.active { display: flex; }
     .loader {
       border: 5px solid #f3f3f3;
       border-top: 5px solid #3498db;
@@ -59,23 +70,12 @@
       height: 50px;
       animation: spin 1s linear infinite;
     }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    #loading-text {
-      color: white;
-      margin-top: 20px;
-      font-size: 18px;
-    }
-    #loading-progress {
-      color: #3498db;
-      margin-top: 10px;
-      font-size: 14px;
-    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-text { color: white; margin-top: 20px; font-size: 18px; }
+    #loading-progress { color: #3498db; margin-top: 10px; font-size: 14px; }
     #progressive-loader {
       position: absolute;
-      bottom: 20px;
+      top: 12px;
       left: 50%;
       transform: translateX(-50%);
       background: rgba(0, 0, 0, 0.6);
@@ -84,13 +84,11 @@
       display: none;
       align-items: center;
       gap: 10px;
+      z-index: 900;
     }
-    #progressive-loader.active {
-      display: flex;
-    }
+    #progressive-loader.active { display: flex; }
     .pulse-dot {
-      width: 8px;
-      height: 8px;
+      width: 8px; height: 8px;
       background: #3498db;
       border-radius: 50%;
       animation: pulse 1.5s ease-in-out infinite;
@@ -102,77 +100,222 @@
       50% { opacity: 1; transform: scale(1.2); }
     }
 
-    /* --- labeling UI --- */
-    #label-panel {
+    /* ============ product surfaces: white instrument ============ */
+    .sheet {
       display: none;
       position: absolute;
-      bottom: 60px;
       left: 50%;
       transform: translateX(-50%);
-      width: min(92vw, 560px);
-      background: rgba(0, 0, 0, 0.75);
-      color: white;
-      padding: 12px;
-      border-radius: 10px;
-      font-size: 13px;
+      bottom: calc(12px + env(safe-area-inset-bottom));
+      width: min(96vw, 600px);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 12px 16px calc(14px);
       box-sizing: border-box;
     }
-    #label-panel.active { display: block; }
-    #lp-summary { opacity: 0.85; margin-bottom: 8px; }
-    .lp-row {
+    .sheet.active { display: block; }
+
+    .sheet-utility {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
       align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      min-height: 32px;
     }
-    .lp-row + .lp-row { margin-top: 8px; }
     .lp-spacer { flex: 1; }
-    .class-btn, .conf-btn, .ghost-btn, .primary-btn {
-      font-size: 12px;
-      color: white;
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      border-radius: 6px;
-      padding: 7px 10px;
+    .icon-quiet {
+      width: 34px; height: 34px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink-soft);
+      border-radius: 50%;
+      font-size: 14px;
+      cursor: pointer;
+      flex: none;
+    }
+    .icon-quiet.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
+
+    /* the signature: the class IS the control */
+    .class-hero {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-bottom: 3px solid var(--cls, var(--line));
+      border-radius: var(--radius-s);
+      padding: 12px 16px;
+      margin: 8px 0 10px;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--ink);
+      cursor: pointer;
+      text-align: left;
+    }
+    .hero-dot {
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: var(--cls, var(--line));
+      flex: none;
+    }
+    .hero-chev {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+
+    .option-grid {
+      display: none;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+      padding-bottom: 10px;
+    }
+    .option-grid.active { display: grid; }
+    .class-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-s);
+      padding: 11px 12px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
       cursor: pointer;
     }
-    button:disabled {
-      opacity: 0.35;
-      cursor: default;
-    }
-    .class-btn::before, .conf-btn::before {
+    .class-btn::before {
       content: "";
-      display: inline-block;
-      width: 9px;
-      height: 9px;
+      width: 11px; height: 11px;
       border-radius: 50%;
-      background: var(--chip, #fff);
-      margin-right: 6px;
+      background: var(--chip, var(--line));
+      flex: none;
     }
-    .class-btn.active, .conf-btn.active {
-      background: rgba(255, 255, 255, 0.25);
-      border-color: var(--chip, #fff);
+    .class-btn.active {
+      border-color: var(--ink);
+      box-shadow: inset 0 0 0 1px var(--ink);
     }
-    #lp-add.active {
-      background: rgba(52, 152, 219, 0.45);
-      border-color: #3498db;
+
+    .tool-row {
+      display: flex;
+      gap: 8px;
+      padding: 2px 0 10px;
     }
-    .primary-btn {
-      background: #3498db;
-      border-color: #3498db;
-      font-weight: bold;
+    .tool-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-s);
+      padding: 7px 4px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      cursor: pointer;
     }
+    .tool-btn > span {
+      font-size: 19px;
+      line-height: 1.1;
+      color: var(--ink);
+      text-transform: none;
+    }
+    .tool-btn.active {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: rgba(255, 255, 255, 0.75);
+    }
+    .tool-btn.active > span { color: #fff; }
+
+    .action-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+    .btn-quiet {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-s);
+      padding: 13px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--confirm);
+      border: 1px solid var(--confirm);
+      border-radius: var(--radius-s);
+      padding: 13px 22px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+      min-width: 42%;
+    }
+
+    /* confidence pills (explore panel) */
+    .conf-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .conf-btn::before {
+      content: "";
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--chip, var(--line));
+    }
+    .conf-btn.active { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+    .conf-row { display: flex; gap: 6px; align-items: center; }
+
+    .sheet-summary {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      padding: 2px 0 8px;
+    }
+
+    /* labels card (top right) */
     #labels-card {
       display: none;
       position: absolute;
       top: 10px;
       right: 10px;
-      width: min(80vw, 260px);
-      background: rgba(0, 0, 0, 0.7);
-      color: white;
-      border-radius: 8px;
-      font-size: 12px;
-      padding: 8px 10px;
+      width: min(84vw, 280px);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      font-size: 13px;
+      padding: 10px 12px;
+      box-sizing: border-box;
     }
     #labels-card.active { display: block; }
     .lc-head {
@@ -181,119 +324,67 @@
       align-items: center;
       gap: 6px;
       margin-bottom: 6px;
+      font-weight: 700;
     }
-    #labels-list { max-height: 40vh; overflow-y: auto; }
+    .lc-head .ghost-btn {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    #labels-count { color: var(--ink-soft); font-weight: 600; }
+    #labels-list { max-height: 34vh; overflow-y: auto; }
     .label-row {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 3px 0;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      gap: 7px;
+      padding: 6px 0;
+      border-top: 1px solid var(--line);
+      font-size: 13px;
     }
-    .label-name { flex: 1; }
-    .label-meta { opacity: 0.6; }
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      flex: none;
-    }
+    .label-name { flex: 1; font-weight: 600; }
+    .label-meta { color: var(--ink-soft); font-size: 12px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
     .row-del {
       background: none;
       border: none;
-      color: rgba(255, 255, 255, 0.6);
-      font-size: 14px;
+      color: var(--ink-soft);
+      font-size: 15px;
       cursor: pointer;
       padding: 0 4px;
     }
-    .row-del:hover { color: #e74c3c; }
+    .row-del:hover { color: var(--danger); }
     .auto-chip {
       font-size: 9px;
-      opacity: 0.65;
-      border: 1px solid rgba(255, 255, 255, 0.35);
-      border-radius: 3px;
-      padding: 0 3px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--ink-soft);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 0 4px;
       vertical-align: 1px;
     }
 
-    /* --- compact mobile layout: info + labels card share the top row --- */
-    @media (max-width: 640px) {
-      #info {
-        font-size: 10px;
-        padding: 6px 8px;
-        max-width: 42vw;
-        opacity: 0.85;
+    @media (prefers-reduced-motion: no-preference) {
+      .option-grid.active { animation: reveal 0.15s ease-out; }
+      @keyframes reveal {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: none; }
       }
-      #labels-card {
-        width: auto;
-        max-width: 54vw;
-        font-size: 11px;
-        padding: 6px 8px;
-      }
-      #labels-list { max-height: 28vh; }
-      .class-btn, .conf-btn, .ghost-btn, .primary-btn {
-        padding: 6px 8px;
-        font-size: 11px;
-      }
-      /* review verbs stay thumb-sized */
-      #review-actions .primary-btn,
-      #review-actions .ghost-btn {
-        padding: 10px 12px;
-        font-size: 12px;
-      }
-      #label-panel {
-        bottom: 8px;
-        padding: 8px;
-        font-size: 12px;
-      }
-      #review-hud {
-        top: 6px;
-        padding: 6px 8px;
-        font-size: 12px;
-      }
-      #review-actions { bottom: 8px; padding: 8px; }
     }
 
-    /* --- review mode --- */
-    #review-hud {
-      display: none;
-      position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: min(94vw, 560px);
-      background: rgba(0, 0, 0, 0.75);
-      color: white;
-      padding: 8px 12px;
-      border-radius: 10px;
-      font-size: 13px;
-      box-sizing: border-box;
-      align-items: center;
-      gap: 8px;
+    @media (max-width: 640px) {
+      #info { font-size: 10px; padding: 6px 8px; max-width: 44vw; opacity: 0.85; }
+      #labels-card { width: auto; max-width: 58vw; font-size: 12px; }
+      .class-hero { font-size: 18px; padding: 10px 12px; }
+      .btn-primary { padding: 12px 14px; }
+      .btn-quiet { padding: 12px 10px; font-size: 13px; }
+      #labels-list { max-height: 26vh; }
     }
-    #review-hud.active { display: flex; }
-    #rh-class { font-weight: bold; }
-    #rh-meta { opacity: 0.7; }
-    #review-actions {
-      display: none;
-      position: absolute;
-      bottom: 16px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: min(94vw, 560px);
-      background: rgba(0, 0, 0, 0.75);
-      color: white;
-      padding: 10px 12px;
-      border-radius: 10px;
-      box-sizing: border-box;
-    }
-    #review-actions.active { display: block; }
-    #review-actions .primary-btn,
-    #review-actions .ghost-btn {
-      padding: 10px 14px; /* thumb-sized */
-    }
-    #ra-reclass { display: none; margin-bottom: 8px; }
-    #ra-reclass.active { display: flex; }
   </style>
 </head>
 <body>
@@ -315,17 +406,28 @@
     <div class="pulse-dot"></div>
     <span style="color: white; font-size: 12px; margin-left: 5px;">Enhancing quality...</span>
   </div>
-  <div id="label-panel">
-    <div id="lp-summary"></div>
-    <div id="lp-classes" class="lp-row"></div>
-    <div class="lp-row">
-      <div id="lp-conf" class="lp-row"></div>
+
+  <!-- explore: create a label -->
+  <div id="label-panel" class="sheet">
+    <div id="lp-summary" class="sheet-summary"></div>
+    <div id="lp-classes" class="option-grid active"></div>
+    <div class="tool-row">
+      <button id="lp-add" class="tool-btn" title="Merge more surfaces (Shift+Click)"><span>+</span>Add</button>
+      <button id="lp-sub" class="tool-btn" title="Remove a region (Alt+Click)"><span>−</span>Remove</button>
+      <button id="lp-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
+      <button id="lp-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
+      <button id="lp-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
+    </div>
+    <div class="action-row">
+      <div id="lp-conf" class="conf-row"></div>
       <span class="lp-spacer"></span>
-      <button id="lp-add" class="ghost-btn" title="Merge more surfaces into this selection (or Shift+Click)">+ Add</button>
-      <button id="lp-cancel" class="ghost-btn">Cancel</button>
-      <button id="lp-save" class="primary-btn">Save label</button>
+      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
+      <button id="lp-cancel" class="btn-quiet">Cancel</button>
+      <button id="lp-save" class="btn-primary">Save label</button>
     </div>
   </div>
+
+  <!-- labels inventory -->
   <div id="labels-card">
     <div class="lc-head">
       <strong>Labels</strong>
@@ -338,23 +440,38 @@
     </div>
     <div id="labels-list"></div>
   </div>
-  <div id="review-hud">
-    <span id="rh-progress"></span>
-    <span id="rh-class"></span>
-    <span id="rh-meta"></span>
-    <span class="lp-spacer"></span>
-    <button id="rh-exit" class="ghost-btn">Exit</button>
-  </div>
-  <div id="review-actions">
-    <div id="ra-reclass" class="lp-row"></div>
-    <div id="ra-verbs" class="lp-row">
-      <button id="ra-correct" class="primary-btn">✓ Correct</button>
-      <button id="ra-wrong" class="ghost-btn">Wrong class</button>
-      <button id="ra-flag" class="ghost-btn">⚑ Flag</button>
+
+  <!-- review: one sheet, everything in reach -->
+  <div id="review-actions" class="sheet">
+    <div class="sheet-utility">
+      <span id="rh-progress"></span>
+      <span id="rh-meta"></span>
       <span class="lp-spacer"></span>
-      <button id="ra-skip" class="ghost-btn">Skip →</button>
+      <button id="ra-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
+      <button id="rh-exit" class="icon-quiet" title="Exit review">✕</button>
+    </div>
+    <button id="ra-class" class="class-hero" title="Change what this surface is">
+      <span class="hero-dot" id="ra-class-dot"></span>
+      <span id="rh-class"></span>
+      <span class="hero-chev">change</span>
+    </button>
+    <div id="ra-reclass" class="option-grid"></div>
+    <div class="tool-row" id="ra-tools">
+      <button id="ra-add" class="tool-btn" title="Tap surfaces to add"><span>+</span>Add</button>
+      <button id="ra-sub" class="tool-btn" title="Tap regions to remove"><span>−</span>Remove</button>
+      <button id="ra-undo" class="tool-btn" title="Undo last change (Z)"><span>↩</span>Undo</button>
+      <button id="ra-grow" class="tool-btn" title="Expand by one ring"><span>⊕</span>Grow</button>
+      <button id="ra-shrink" class="tool-btn" title="Contract by one ring"><span>⊖</span>Shrink</button>
+    </div>
+    <div class="action-row" id="ra-verbs">
+      <button id="ra-flag" class="btn-quiet">⚑ Flag</button>
+      <button id="ra-skip" class="btn-quiet">Skip →</button>
+      <button id="ra-discard" class="btn-quiet" style="display:none">Discard</button>
+      <span class="lp-spacer"></span>
+      <button id="ra-correct" class="btn-primary">✓ Confirm</button>
     </div>
   </div>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

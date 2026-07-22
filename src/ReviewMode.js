@@ -20,7 +20,7 @@ const MAX_DISTANCE = 90;
 const TWEEN_MS = 450;
 
 export class ReviewMode {
-  constructor({ camera, orbit, labels, streamer, ui, onChange, onExit }) {
+  constructor({ camera, orbit, labels, streamer, ui, onChange, onExit, onItemShown, onCorrect, onReclass }) {
     this.camera = camera;
     this.orbit = orbit;
     this.labels = labels;
@@ -28,6 +28,9 @@ export class ReviewMode {
     this.ui = ui;
     this.onChange = onChange || (() => {});
     this.onExit = onExit || (() => {});
+    this.onItemShown = onItemShown || (() => {}); // item, or null when complete
+    this.onCorrect = onCorrect || null; // interceptor: dirty-state saves
+    this.onReclass = onReclass || null; // interceptor: returns true if handled
 
     this.active = false;
     this.queue = [];
@@ -41,7 +44,10 @@ export class ReviewMode {
   bindUI() {
     if (!this.ui) return; // headless tests
     this.ui.exit.addEventListener("click", () => this.exit());
-    this.ui.correct.addEventListener("click", () => this.correct());
+    this.ui.correct.addEventListener("click", () => {
+      if (this.onCorrect && this.onCorrect()) return;
+      this.correct();
+    });
     this.ui.flag.addEventListener("click", () => this.flag());
     this.ui.skip.addEventListener("click", () => this.skip());
     this.ui.wrong.addEventListener("click", () =>
@@ -52,7 +58,11 @@ export class ReviewMode {
       b.className = "class-btn";
       b.style.setProperty("--chip", cls.color);
       b.textContent = cls.name;
-      b.addEventListener("click", () => this.reclass(cls.id));
+      b.addEventListener("click", () => {
+        this.ui.reclass.classList.remove("active");
+        if (this.onReclass && this.onReclass(cls.id)) return;
+        this.reclass(cls.id);
+      });
       this.ui.reclass.appendChild(b);
     }
   }
@@ -124,6 +134,23 @@ export class ReviewMode {
     return this.active ? this.queue[this.index] : null;
   }
 
+  // After an in-review boundary edit: recompute the item's framing data from
+  // its (mutated-in-place) label and re-present it.
+  refreshCurrentItem() {
+    const item = this.cur();
+    if (!item) return;
+    item.bbox = this.labels.worldBBoxOf(item.label);
+    item.center = item.bbox.getCenter(new THREE.Vector3());
+    this.show(this.index);
+  }
+
+  // The item under review was deleted: drop it and present the next.
+  removeCurrentItem() {
+    if (!this.active) return;
+    this.queue.splice(this.index, 1);
+    this.show(this.index);
+  }
+
   itemTileSet(item) {
     return new Set(item.label.tiles.map((t) => t.t));
   }
@@ -148,11 +175,15 @@ export class ReviewMode {
 
     if (this.ui) {
       const cls = LABEL_CLASSES.find((c) => c.id === item.label.class);
-      this.ui.progress.textContent = `${i + 1} / ${this.queue.length}`;
+      this.ui.progress.textContent = `${i + 1} of ${this.queue.length}`;
       this.ui.klass.textContent = cls ? cls.name : item.label.class;
       this.ui.meta.textContent = `${item.label.faceCount.toLocaleString()} faces`;
       this.ui.reclass.classList.remove("active");
+      if (cls && this.ui.classHero) {
+        this.ui.classHero.style.setProperty("--cls", cls.color);
+      }
     }
+    this.onItemShown(item);
   }
 
   // Streaming focus: high-res textures for the item's own tiles, prefetch for
@@ -253,6 +284,7 @@ export class ReviewMode {
     const last = this.queue[this.queue.length - 1];
     if (last) this.labels.emphasize(last.label.id, false);
     this.index = this.queue.length;
+    this.onItemShown(null);
     if (this.ui) {
       const s = this.stats;
       this.ui.progress.textContent = "Done";
@@ -265,6 +297,8 @@ export class ReviewMode {
   setActionsVisible(on) {
     if (!this.ui) return;
     this.ui.verbs.style.display = on ? "" : "none";
+    if (this.ui.tools) this.ui.tools.style.display = on ? "" : "none";
+    if (this.ui.classHero) this.ui.classHero.style.display = on ? "" : "none";
     if (!on) this.ui.reclass.classList.remove("active");
   }
 }

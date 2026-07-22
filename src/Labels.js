@@ -268,6 +268,81 @@ export class LabelManager {
     this.persist();
   }
 
+  // Which label (if any) owns this face? Decodes only the hit tile's delta
+  // list per label — cheap enough to run per click.
+  findLabelAt(mesh, faceIdx) {
+    const t = this.tileIndex.get(mesh);
+    if (t == null) return null;
+    for (const label of this.labels) {
+      const tile = label.tiles.find((x) => x.t === t);
+      if (!tile) continue;
+      let acc = 0;
+      for (const d of tile.df) {
+        acc += d;
+        if (acc === faceIdx) return label;
+        if (acc > faceIdx) break;
+      }
+    }
+    return null;
+  }
+
+  // Stored label -> live Map(mesh -> Set(faceIdx)) for editing.
+  decodeSelection(label) {
+    const map = new Map();
+    for (const { t, df } of label.tiles) {
+      const mesh = this.tileMeshes[t];
+      if (!mesh) continue;
+      const set = new Set();
+      let acc = 0;
+      for (const d of df) {
+        acc += d;
+        set.add(acc);
+      }
+      map.set(mesh, set);
+    }
+    return map;
+  }
+
+  // Replace a label's geometry (and optionally class/confidence) in place —
+  // the click-to-edit flow. Repaints the overlay and persists.
+  update(id, { selected, classId, confidence }) {
+    const label = this.labels.find((l) => l.id === id);
+    if (!label) return null;
+    const tiles = [];
+    let faceCount = 0;
+    let area = 0;
+    for (const [mesh, faces] of selected) {
+      const t = this.tileIndex.get(mesh);
+      if (t == null) continue;
+      const sorted = Array.from(faces).sort((a, b) => a - b);
+      faceCount += sorted.length;
+      area += worldArea(mesh, sorted);
+      tiles.push({ t, df: deltaEncode(sorted) });
+    }
+    if (!faceCount) return null;
+    label.tiles = tiles;
+    label.faceCount = faceCount;
+    label.area = +area.toFixed(3);
+    if (classId) label.class = classId;
+    if (confidence) label.confidence = confidence;
+    label.editedAt = new Date().toISOString();
+    const overlay = this.overlays.get(id);
+    if (overlay) {
+      this.scene.remove(overlay);
+      overlay.geometry.dispose();
+      overlay.material.dispose();
+      this.overlays.delete(id);
+    }
+    this.paint(label);
+    this.persist();
+    return label;
+  }
+
+  setOverlayVisible(id, on) {
+    const overlay = this.overlays.get(id);
+    if (overlay) overlay.visible = on;
+  }
+
   // Review-verb mutations: reclassify (repaints the overlay in the new class
   // color) and confidence transitions. Both persist immediately.
   setClass(id, classId) {

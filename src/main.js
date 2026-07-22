@@ -52,7 +52,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "tune-1";
+const BUILD_VERSION = "ui-1";
 
 class MeshExplorer {
   constructor() {
@@ -86,6 +86,12 @@ class MeshExplorer {
     this.mode = "explore";
     this.orbit = null;
     this.review = null;
+
+    // Selection refinement state: subtract mode, undo history (snapshots of
+    // the pending face map, capped), and the label being edited in place.
+    this.subMode = false;
+    this.pendingHistory = [];
+    this.editingLabelId = null;
 
     this.init();
     this.setupEventListeners();
@@ -274,11 +280,10 @@ class MeshExplorer {
         const dy = event.clientY - downPos.y;
         if (dx * dx + dy * dy > 25) return; // moved >5px: that was a look, not a click
       }
-      this.handleSurfaceSelection(
-        event.clientX,
-        event.clientY,
-        event.shiftKey || this.addMode
-      );
+      this.handleSurfaceSelection(event.clientX, event.clientY, {
+        add: event.shiftKey || this.addMode,
+        sub: event.altKey || this.subMode,
+      });
     });
 
     // Handle touch taps for mobile
@@ -289,7 +294,10 @@ class MeshExplorer {
         // Use timeout to distinguish tap from drag
         if (tapTimeout) clearTimeout(tapTimeout);
         tapTimeout = setTimeout(() => {
-          this.handleSurfaceSelection(touch.clientX, touch.clientY, this.addMode);
+          this.handleSurfaceSelection(touch.clientX, touch.clientY, {
+            add: this.addMode,
+            sub: this.subMode,
+          });
         }, 100);
       }
     });
@@ -303,8 +311,17 @@ class MeshExplorer {
 
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (this.mode === "review" && this.review) this.review.exit();
-        else this.cancelPendingSelection();
+        if (this.mode === "review" && this.pendingDirty) {
+          this.cancelPendingSelection(); // discard edits, stay on the item
+        } else if (this.mode === "review" && this.review) {
+          this.review.exit();
+        } else {
+          this.cancelPendingSelection();
+        }
+        return;
+      }
+      if (event.key === "z" && this.pending && (this.mode === "explore" || this.reviewAdjust)) {
+        this.undoPending();
         return;
       }
       // Live LOD range tuning in ?debug: [ shrinks the load/reveal radii,
@@ -322,7 +339,7 @@ class MeshExplorer {
       }
       // Desktop review shortcuts (FirstPersonControls is disabled in review,
       // so no WASD conflicts).
-      if (this.mode === "review" && this.review && this.review.active) {
+      if (this.mode === "review" && this.review && this.review.active && !this.pendingDirty) {
         if (event.key === "Enter") this.review.correct();
         else if (event.key === "s" || event.key === "S") this.review.skip();
         else if (event.key === "f" || event.key === "F") this.review.flag();
@@ -332,9 +349,13 @@ class MeshExplorer {
     this.initLabelUI();
   }
 
-  handleSurfaceSelection(clientX, clientY, additive = false) {
-    if (this.mode !== "explore") return;
+  handleSurfaceSelection(clientX, clientY, mods = {}) {
+    const adjusting = this.mode === "review" && this.reviewAdjust;
+    if (this.mode !== "explore" && !adjusting) return;
     if (!this.currentMesh || !this.selector) return;
+    // While adjusting a review item, plain taps ADD (subtract via toggle) —
+    // a stray tap must never abandon the edit or start a new label.
+    if (adjusting && !mods.sub) mods = { ...mods, add: true };
 
     // Convert screen coordinates to normalized device coordinates
     this.mouse.x = (clientX / window.innerWidth) * 2 - 1;
@@ -348,14 +369,45 @@ class MeshExplorer {
     // is exactly what we want for tiles whose low-res twin is hidden.)
     const intersects = this.raycaster.intersectObject(this.currentMesh, true);
     if (!intersects.length) {
-      if (!additive) this.cancelPendingSelection();
+      if (!mods.add && !mods.sub && !adjusting) this.cancelPendingSelection();
+      return;
+    }
+    const hit = intersects[0];
+
+    // Click on an existing label with no pending selection = edit it.
+    if (!this.pending && !mods.add && !mods.sub && this.labels) {
+      const owner = this.labels.findLabelAt(hit.object, hit.faceIndex);
+      if (owner) {
+        this.enterEditLabel(owner);
+        return;
+      }
+    }
+
+    // Subtract: remove the flood region under the click from the pending set.
+    if (mods.sub && this.pending) {
+      const region = this.selector.select(hit, this.currentMesh);
+      if (!region || !region.totalSelected) return;
+      this.pushPendingHistory();
+      for (const [mesh, faces] of region.selected) {
+        const set = this.pending.selected.get(mesh);
+        if (!set) continue;
+        for (const f of faces) set.delete(f);
+        if (!set.size) this.pending.selected.delete(mesh);
+      }
+      if (!this.pending.selected.size) {
+        this.cancelPendingSelection();
+        return;
+      }
+      this.pending.clicks++;
+      this.refreshPending();
       return;
     }
 
-    const result = this.selector.select(intersects[0], this.currentMesh);
+    const result = this.selector.select(hit, this.currentMesh);
     if (!result || result.totalSelected === 0) return;
 
-    if (additive && this.pending) {
+    if (mods.add && this.pending) {
+      this.pushPendingHistory();
       for (const [mesh, faces] of result.selected) {
         let set = this.pending.selected.get(mesh);
         if (!set) {
@@ -366,29 +418,191 @@ class MeshExplorer {
       }
       this.pending.clicks++;
     } else {
+      if (this.editingLabelId) this.exitEditState(); // clicked away mid-edit
+      this.pendingHistory = [];
       this.pending = {
         selected: result.selected,
         targetClass: result.targetClass,
         clicks: 1,
       };
     }
+    this.refreshPending();
+  }
 
-    this.pending.faceCount = 0;
-    for (const set of this.pending.selected.values()) {
-      this.pending.faceCount += set.size;
+  // Recompute pending stats, redraw the highlight, refresh whichever surface
+  // owns the interaction (review sheet vs explore panel).
+  refreshPending() {
+    const p = this.pending;
+    if (!p) return;
+    p.faceCount = 0;
+    for (const set of p.selected.values()) p.faceCount += set.size;
+    p.suggested = this.labels ? this.labels.suggestFor(p) : "other";
+    this.selector.showFaces(p.selected);
+    if (this.mode === "review" && this.reviewAdjust) {
+      this.pendingDirty = true;
+      this.updateReviewSheet();
+    } else {
+      this.showLabelPanel();
     }
-    this.pending.suggested = this.labels
-      ? this.labels.suggestFor(this.pending)
-      : "other";
+  }
 
+  pushPendingHistory() {
+    if (!this.pending) return;
+    const snap = new Map();
+    for (const [mesh, faces] of this.pending.selected) snap.set(mesh, new Set(faces));
+    this.pendingHistory.push(snap);
+    if (this.pendingHistory.length > 20) this.pendingHistory.shift();
+  }
+
+  undoPending() {
+    if (!this.pending || !this.pendingHistory.length) return;
+    this.pending.selected = this.pendingHistory.pop();
+    this.pending.clicks = Math.max(1, this.pending.clicks - 1);
+    this.refreshPending();
+  }
+
+  growPending() {
+    if (!this.pending || !this.selector) return;
+    this.pushPendingHistory();
+    this.pending.selected = this.selector.growSelection(
+      this.pending.selected,
+      this.currentMesh
+    );
+    this.refreshPending();
+  }
+
+  shrinkPending() {
+    if (!this.pending || !this.selector) return;
+    this.pushPendingHistory();
+    const shrunk = this.selector.shrinkSelection(
+      this.pending.selected,
+      this.currentMesh
+    );
+    if (!shrunk.size) return; // never shrink to nothing — undo is for that
+    this.pending.selected = shrunk;
+    this.refreshPending();
+  }
+
+  // --- in-review editing (always armed) --------------------------------------
+
+  // Every review item arrives ready to edit: its faces are the live pending
+  // selection, tools work immediately, taps add (− Remove toggle subtracts).
+  // Clean state = verbs (Confirm/Flag/Skip); any change = Save/Discard.
+  armReviewItem(item) {
+    this.quietDisarm();
+    if (!item) {
+      this.reviewAdjust = false; // queue complete
+      return;
+    }
+    this.reviewAdjust = true;
+    this.editingLabelId = item.label.id;
+    this.labels.setOverlayVisible(item.label.id, false); // live highlight replaces it
+    this.pending = {
+      selected: this.labels.decodeSelection(item.label),
+      targetClass: item.label.geomClass || "roof-flat",
+      clicks: 1,
+    };
+    this.pending.faceCount = item.label.faceCount;
+    this.pendingDirty = false;
+    this.pickClass(item.label.class);
+    this.pickConfidence(item.label.confidence);
     this.selector.showFaces(this.pending.selected);
-    this.showLabelPanel();
+    this.updateReviewSheet();
+  }
+
+  quietDisarm() {
+    if (this.editingLabelId && this.labels) {
+      this.labels.setOverlayVisible(this.editingLabelId, true);
+    }
+    this.editingLabelId = null;
+    this.pending = null;
+    this.pendingHistory = [];
+    this.pendingDirty = false;
+    if (this.selector) this.selector.clearHighlight();
+    this.setAddMode(false);
+    this.setSubMode(false);
+  }
+
+  updateReviewSheet() {
+    if (!this.review || !this.review.ui) return;
+    const ui = this.review.ui;
+    const dirty = !!this.pendingDirty;
+    document.getElementById("ra-discard").style.display = dirty ? "" : "none";
+    document.getElementById("ra-delete").style.display = "";
+    ui.flag.style.display = dirty ? "none" : "";
+    ui.skip.style.display = dirty ? "none" : "";
+    ui.correct.textContent = dirty ? "✓ Save changes" : "✓ Confirm";
+    document.getElementById("ra-undo").disabled = this.pendingHistory.length === 0;
+    const cls = LABEL_CLASSES.find((c) => c.id === this.pickedClass);
+    if (cls) {
+      ui.klass.textContent = cls.name;
+      ui.classHero.style.setProperty("--cls", cls.color);
+      document.getElementById("ra-class-dot").style.background = cls.color;
+    }
+    if (this.pending) {
+      ui.meta.textContent = `${this.pending.faceCount.toLocaleString()} faces`;
+    }
+  }
+
+  // Confirm button: clean = verdict, dirty = save the edit (and count it).
+  handleReviewConfirm() {
+    if (!this.pendingDirty) return false; // let ReviewMode.correct() run
+    this.labels.update(this.editingLabelId, {
+      selected: this.pending.selected,
+      classId: this.pickedClass,
+      confidence: "confirmed",
+    });
+    this.pendingDirty = false;
+    this.editingLabelId = null; // updated overlay repaints visible
+    this.review.correct(); // advance; next item re-arms via onItemShown
+    return true;
+  }
+
+  // Class chip: clean = classic reclass verb (advance); dirty = just set the
+  // class, it saves with the rest of the edit.
+  handleReviewReclass(classId) {
+    this.pickClass(classId);
+    if (!this.pendingDirty) return false; // default reclass+advance
+    this.updateReviewSheet();
+    return true;
+  }
+
+  // --- click-to-edit existing labels ----------------------------------------
+
+  enterEditLabel(label) {
+    this.editingLabelId = label.id;
+    this.labels.setOverlayVisible(label.id, false); // pending highlight replaces it
+    this.pendingHistory = [];
+    this.pending = {
+      selected: this.labels.decodeSelection(label),
+      targetClass: label.geomClass || "roof-flat",
+      clicks: 1,
+    };
+    this.refreshPending();
+    // panel opens via refreshPending; preselect the label's own values
+    this.pickClass(label.class);
+    this.pickConfidence(label.confidence);
+  }
+
+  exitEditState() {
+    if (this.editingLabelId && this.labels) {
+      this.labels.setOverlayVisible(this.editingLabelId, true);
+    }
+    this.editingLabelId = null;
   }
 
   cancelPendingSelection() {
+    // In review, "cancel" means discard edits: re-present the item fresh.
+    if (this.mode === "review" && this.reviewAdjust && this.review) {
+      this.review.show(this.review.index);
+      return;
+    }
+    this.exitEditState();
     this.pending = null;
+    this.pendingHistory = [];
     if (this.selector) this.selector.clearHighlight();
     this.setAddMode(false);
+    this.setSubMode(false);
     if (this.ui) this.ui.panel.classList.remove("active");
   }
 
@@ -564,21 +778,26 @@ class MeshExplorer {
         labels: this.labels,
         streamer: this.streamer,
         ui: {
-          hud: document.getElementById("review-hud"),
+          hud: document.getElementById("review-actions"), // one sheet now
           progress: document.getElementById("rh-progress"),
           klass: document.getElementById("rh-class"),
+          classHero: document.getElementById("ra-class"),
           meta: document.getElementById("rh-meta"),
           exit: document.getElementById("rh-exit"),
           actions: document.getElementById("review-actions"),
           reclass: document.getElementById("ra-reclass"),
           verbs: document.getElementById("ra-verbs"),
+          tools: document.getElementById("ra-tools"),
           correct: document.getElementById("ra-correct"),
-          wrong: document.getElementById("ra-wrong"),
+          wrong: document.getElementById("ra-class"), // the class chip toggles the picker
           flag: document.getElementById("ra-flag"),
           skip: document.getElementById("ra-skip"),
         },
         onChange: () => this.renderLabelList(),
         onExit: () => this.handleReviewExit(),
+        onItemShown: (item) => this.armReviewItem(item),
+        onCorrect: () => this.handleReviewConfirm(),
+        onReclass: (classId) => this.handleReviewReclass(classId),
       });
     }
     // Refresh refs — labels is rebuilt per map, streamer arrives after load.
@@ -602,6 +821,8 @@ class MeshExplorer {
   }
 
   handleReviewExit() {
+    this.quietDisarm();
+    this.reviewAdjust = false;
     this.mode = "explore";
     if (this.orbit) this.orbit.enabled = false;
     this.controls.enabled = true;
@@ -612,7 +833,22 @@ class MeshExplorer {
 
   setAddMode(on) {
     this.addMode = on;
-    if (this.ui) this.ui.addToggle.classList.toggle("active", on);
+    if (on) this.subMode = false;
+    this.syncModeToggles();
+  }
+
+  setSubMode(on) {
+    this.subMode = on;
+    if (on) this.addMode = false;
+    this.syncModeToggles();
+  }
+
+  syncModeToggles() {
+    if (!this.ui) return;
+    this.ui.addToggle.classList.toggle("active", this.addMode);
+    this.ui.subToggle.classList.toggle("active", this.subMode);
+    document.getElementById("ra-add").classList.toggle("active", this.addMode);
+    document.getElementById("ra-sub").classList.toggle("active", this.subMode);
   }
 
   // --- labeling UI -----------------------------------------------------------
@@ -624,6 +860,11 @@ class MeshExplorer {
       classes: document.getElementById("lp-classes"),
       conf: document.getElementById("lp-conf"),
       addToggle: document.getElementById("lp-add"),
+      subToggle: document.getElementById("lp-sub"),
+      undoBtn: document.getElementById("lp-undo"),
+      growBtn: document.getElementById("lp-grow"),
+      shrinkBtn: document.getElementById("lp-shrink"),
+      deleteBtn: document.getElementById("lp-delete"),
       save: document.getElementById("lp-save"),
       cancel: document.getElementById("lp-cancel"),
       card: document.getElementById("labels-card"),
@@ -658,6 +899,40 @@ class MeshExplorer {
     }
 
     this.ui.addToggle.addEventListener("click", () => this.setAddMode(!this.addMode));
+    this.ui.subToggle.addEventListener("click", () => this.setSubMode(!this.subMode));
+    this.ui.undoBtn.addEventListener("click", () => this.undoPending());
+    this.ui.growBtn.addEventListener("click", () => this.growPending());
+    this.ui.shrinkBtn.addEventListener("click", () => this.shrinkPending());
+    this.ui.deleteBtn.addEventListener("click", () => {
+      if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
+        const id = this.editingLabelId;
+        this.editingLabelId = null; // overlay is going away — skip restore
+        this.labels.remove(id);
+        this.cancelPendingSelection();
+        this.renderLabelList();
+      }
+    });
+
+    // review-sheet controls that live outside ReviewMode's own bindings
+    const bindTool = (id, fn) => document.getElementById(id).addEventListener("click", fn);
+    bindTool("ra-add", () => this.setAddMode(!this.addMode));
+    bindTool("ra-sub", () => this.setSubMode(!this.subMode));
+    bindTool("ra-undo", () => this.undoPending());
+    bindTool("ra-grow", () => this.growPending());
+    bindTool("ra-shrink", () => this.shrinkPending());
+    bindTool("ra-discard", () => this.cancelPendingSelection());
+    bindTool("ra-delete", () => {
+      if (!this.editingLabelId || !this.labels) return;
+      if (!confirm("Delete this label?")) return;
+      const id = this.editingLabelId;
+      this.editingLabelId = null; // gone — no overlay to restore
+      this.pending = null;
+      this.pendingDirty = false;
+      if (this.selector) this.selector.clearHighlight();
+      this.labels.remove(id);
+      if (this.review) this.review.removeCurrentItem();
+      this.renderLabelList();
+    });
     this.ui.save.addEventListener("click", () => this.saveLabel());
     this.ui.cancel.addEventListener("click", () => this.cancelPendingSelection());
     this.ui.reviewBtn.addEventListener("click", () => this.enterReviewMode());
@@ -699,28 +974,42 @@ class MeshExplorer {
     if (!this.ui || !this.pending) return;
     const p = this.pending;
     const tiles = p.selected.size;
+    const editing = !!this.editingLabelId;
     this.ui.summary.textContent =
+      (editing ? "EDITING · " : "") +
       `${p.faceCount.toLocaleString()} faces · ${tiles} tile${tiles === 1 ? "" : "s"}` +
       (p.clicks > 1 ? ` · ${p.clicks} clicks` : "") +
       ` · suggested: ${this.labels ? this.labels.className(p.suggested) : p.suggested}`;
     // Preselect the suggestion on a fresh selection; keep the user's picks
-    // while they extend with shift-click / add mode.
-    if (p.clicks === 1) {
+    // while they refine (add/sub/grow/shrink) or edit an existing label.
+    if (p.clicks === 1 && !editing) {
       this.pickClass(p.suggested);
       this.pickConfidence("confirmed");
     }
+    this.ui.deleteBtn.style.display = editing ? "" : "none";
+    this.ui.undoBtn.disabled = this.pendingHistory.length === 0;
+    this.ui.save.textContent = editing ? "Update label" : "Save label";
     this.ui.panel.classList.add("active");
   }
 
   saveLabel() {
     if (!this.pending || !this.labels || !this.pickedClass) return;
-    this.labels.add({
-      selected: this.pending.selected,
-      classId: this.pickedClass,
-      confidence: this.pickedConfidence,
-      suggested: this.pending.suggested,
-      targetClass: this.pending.targetClass,
-    });
+    if (this.editingLabelId) {
+      this.labels.update(this.editingLabelId, {
+        selected: this.pending.selected,
+        classId: this.pickedClass,
+        confidence: this.pickedConfidence,
+      });
+      this.editingLabelId = null; // updated overlay repaints visible
+    } else {
+      this.labels.add({
+        selected: this.pending.selected,
+        classId: this.pickedClass,
+        confidence: this.pickedConfidence,
+        suggested: this.pending.suggested,
+        targetClass: this.pending.targetClass,
+      });
+    }
     this.cancelPendingSelection();
     this.renderLabelList();
   }
