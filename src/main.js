@@ -53,7 +53,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "toolbar-2";
+const BUILD_VERSION = "erase-toggle-1";
 
 class MeshExplorer {
   constructor() {
@@ -269,6 +269,22 @@ class MeshExplorer {
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
+
+    // Kill iOS OS-level zoom that the viewport meta alone doesn't stop:
+    // pinch (gesture* events) and double-tap-to-zoom.
+    ["gesturestart", "gesturechange", "gestureend"].forEach((ev) =>
+      document.addEventListener(ev, (e) => e.preventDefault(), { passive: false })
+    );
+    let lastTouchEnd = 0;
+    document.addEventListener(
+      "touchend",
+      (e) => {
+        const now = performance.now();
+        if (now - lastTouchEnd < 320) e.preventDefault(); // second tap of a double-tap
+        lastTouchEnd = now;
+      },
+      { passive: false }
+    );
 
     this.updateControlsInfo();
     this.setupSurfaceSelection();
@@ -1032,16 +1048,11 @@ class MeshExplorer {
     bar.querySelectorAll("[data-tool]").forEach((b) =>
       b.classList.toggle("active", b.dataset.tool === this.editTool)
     );
-    const intent = document.getElementById("tb-intent");
-    if (intent) {
-      const add = this.editIntent === "add";
-      intent.classList.toggle("intent-add", add);
-      intent.classList.toggle("intent-remove", !add);
-      const lbl = document.getElementById("tb-intent-lbl");
-      if (lbl) lbl.textContent = add ? "Add" : "Remove";
-      const svg = document.getElementById("tb-intent-svg");
-      if (svg) svg.innerHTML = add ? '<path d="M12 5v14M5 12h14"/>' : '<path d="M5 12h14"/>';
-    }
+    // Erase = the remove intent, shown as an on/off modifier (not a tool).
+    const erasing = this.editIntent === "remove";
+    bar.classList.toggle("erasing", erasing);
+    const erase = document.getElementById("tb-erase");
+    if (erase) erase.classList.toggle("active", erasing);
     const undo = document.getElementById("tb-undo");
     if (undo) undo.disabled = this.pendingHistory.length === 0;
   }
@@ -1052,7 +1063,7 @@ class MeshExplorer {
     bar.querySelectorAll("[data-tool]").forEach((b) =>
       b.addEventListener("click", () => this.setTool(b.dataset.tool))
     );
-    document.getElementById("tb-intent").addEventListener("click", () =>
+    document.getElementById("tb-erase").addEventListener("click", () =>
       this.setIntent(this.editIntent === "add" ? "remove" : "add")
     );
     document.getElementById("tb-undo").addEventListener("click", () => this.undoPending());

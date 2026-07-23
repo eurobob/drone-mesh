@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Drone Mesh Explorer</title>
   <style>
     /* ============ instrument tokens ============ */
@@ -35,6 +35,7 @@
       user-select: none;
       -webkit-touch-callout: none;
       -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation; /* no double-tap-to-zoom delay/gesture */
     }
     #canvas-container {
       width: 100vw;
@@ -446,8 +447,10 @@
     .tool-ico svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .tool-ico.active { background: var(--ink); color: #fff; }
     .tool-ico:disabled { opacity: 0.35; }
-    #tb-intent.intent-add { color: var(--confirm); }
-    #tb-intent.intent-remove { color: var(--danger); }
+    /* Erase is a modifier, not a tool: when on it turns red, and the active
+       tag tool turns red too so a tap/brush/lasso clearly REMOVES. */
+    #tb-erase.active { background: var(--danger); color: #fff; }
+    #toolbar.erasing .tool-ico.active:not(#tb-erase) { background: var(--danger); color: #fff; }
     .tool-div {
       width: 1px;
       align-self: stretch;
@@ -681,8 +684,8 @@
     <button class="tool-ico" data-tool="lasso" title="Lasso faces">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="10" r="6" stroke-dasharray="3 3"/><path d="M8 15c-1.5 1.5-.5 4 1.5 4"/></svg>Lasso</button>
     <span class="tool-div"></span>
-    <button id="tb-intent" class="tool-ico intent-add" title="Toggle add / remove">
-      <svg viewBox="0 0 24 24" id="tb-intent-svg"><path d="M12 5v14M5 12h14"/></svg><span id="tb-intent-lbl">Add</span></button>
+    <button id="tb-erase" class="tool-ico" title="Erase mode — the active tool removes instead of adds">
+      <svg viewBox="0 0 24 24"><path d="M4 15.5 13 6.5a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L11.5 19H6.5z"/><path d="M8 11l5 5"/><path d="M4.5 19H19"/></svg>Erase</button>
     <span class="tool-div refine-only"></span>
     <button id="tb-undo" class="tool-ico refine-only" title="Undo (Z)">
       <svg viewBox="0 0 24 24"><path d="M9 7L4 12l5 5"/><path d="M4 12h11a4 4 0 0 1 0 8h-1"/></svg>Undo</button>
