@@ -9,6 +9,14 @@ export class FirstPersonControls {
     // is ignored and update() is a no-op that keeps prevTime fresh.
     this.enabled = true;
 
+    // paintMode: a tagging tool (brush/lasso) owns single-finger / mouse
+    // input, so we ignore look from those and keep ONLY two-finger nav.
+    this.paintMode = false;
+
+    // orbitTarget: when set (a selection exists), drag orbits AROUND this
+    // world point instead of first-person free-look.
+    this.orbitTarget = null;
+
     this.baseMoveSpeed = 1.5; // Slower base speed
     this.fastMoveSpeed = 10; // Fast mode speed
     this.movementSpeed = this.baseMoveSpeed;
@@ -111,15 +119,18 @@ export class FirstPersonControls {
   }
 
   onMouseMove(event) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.paintMode) return;
     if (this.isMouseDown) {
       const deltaX = event.clientX - this.mouseX;
       const deltaY = event.clientY - this.mouseY;
 
-      this.lon += deltaX * this.lookSpeed * 50;
-      this.lat -= deltaY * this.lookSpeed * 50;
-
-      this.lat = Math.max(-85, Math.min(85, this.lat));
+      if (this.orbitTarget) {
+        this.orbitDrag(deltaX, deltaY);
+      } else {
+        this.lon += deltaX * this.lookSpeed * 50;
+        this.lat -= deltaY * this.lookSpeed * 50;
+        this.lat = Math.max(-85, Math.min(85, this.lat));
+      }
 
       this.mouseX = event.clientX;
       this.mouseY = event.clientY;
@@ -127,7 +138,7 @@ export class FirstPersonControls {
   }
 
   onMouseDown(event) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.paintMode) return;
     if (event.button === 0) {
       this.isMouseDown = true;
       this.mouseX = event.clientX;
@@ -155,18 +166,13 @@ export class FirstPersonControls {
       });
     }
 
-    if (this.touches.size === 2) {
-      const touchArray = Array.from(this.touches.values());
-      const dx = touchArray[0].x - touchArray[1].x;
-      const dy = touchArray[0].y - touchArray[1].y;
+    if (this.touches.size >= 2) {
+      const a = Array.from(this.touches.values());
+      const dx = a[0].x - a[1].x;
+      const dy = a[0].y - a[1].y;
       this.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
-      
-      this.lastTwoFingerCenter.x = (touchArray[0].x + touchArray[1].x) / 2;
-      this.lastTwoFingerCenter.y = (touchArray[0].y + touchArray[1].y) / 2;
-    } else if (this.touches.size === 3) {
-      const touchArray = Array.from(this.touches.values());
-      this.lastThreeFingerCenter.x = (touchArray[0].x + touchArray[1].x + touchArray[2].x) / 3;
-      this.lastThreeFingerCenter.y = (touchArray[0].y + touchArray[1].y + touchArray[2].y) / 3;
+      this.lastTwoFingerCenter.x = (a[0].x + a[1].x) / 2;
+      this.lastTwoFingerCenter.y = (a[0].y + a[1].y) / 2;
     }
   }
 
@@ -174,79 +180,57 @@ export class FirstPersonControls {
     if (!this.enabled) return;
     event.preventDefault();
 
+    const n = this.touches.size;
+
+    if (n === 1) {
+      // one finger = look (unless a tag tool owns it — then it's painting)
+      const touch = event.changedTouches[0];
+      const st = this.touches.get(touch.identifier);
+      if (!st) return;
+      if (!this.paintMode) {
+        if (this.orbitTarget) {
+          this.orbitDrag(touch.clientX - st.x, touch.clientY - st.y);
+        } else {
+          this.lon -= (touch.clientX - st.x) * this.lookSpeed * 100;
+          this.lat += (touch.clientY - st.y) * this.lookSpeed * 100;
+          this.lat = Math.max(-85, Math.min(85, this.lat));
+        }
+      }
+      st.x = touch.clientX;
+      st.y = touch.clientY;
+      return;
+    }
+
+    // two (or more) fingers = pinch-zoom AND pan together
     for (let i = 0; i < event.changedTouches.length; i++) {
       const touch = event.changedTouches[i];
-      const storedTouch = this.touches.get(touch.identifier);
-      if (storedTouch) {
-        const deltaX = touch.clientX - storedTouch.x;
-        const deltaY = touch.clientY - storedTouch.y;
-
-        if (this.touches.size === 1) {
-          // 1-finger drag = look/rotation (inverted X and Y axis)
-          this.lon -= deltaX * this.lookSpeed * 100;
-          this.lat += deltaY * this.lookSpeed * 100;
-          this.lat = Math.max(-85, Math.min(85, this.lat));
-        } else if (this.touches.size === 2) {
-          const touchArray = Array.from(this.touches.values());
-
-          // Update current touch position
-          storedTouch.x = touch.clientX;
-          storedTouch.y = touch.clientY;
-
-          // Calculate current distance for pinch
-          const dx = touchArray[0].x - touchArray[1].x;
-          const dy = touchArray[0].y - touchArray[1].y;
-          const currentDistance = Math.sqrt(dx * dx + dy * dy);
-
-          // Pinch gesture = forward/back movement
-          if (this.lastPinchDistance > 0) {
-            const pinchDelta = currentDistance - this.lastPinchDistance;
-            const forward = new THREE.Vector3();
-            this.camera.getWorldDirection(forward);
-            const movementAmount = pinchDelta * 0.03;
-            this.camera.position.addScaledVector(forward, movementAmount);
-          }
-
-          this.lastPinchDistance = currentDistance;
-        } else if (this.touches.size === 3) {
-          const touchArray = Array.from(this.touches.values());
-
-          const currentCenter = {
-            x: (touchArray[0].x + touchArray[1].x + touchArray[2].x) / 3,
-            y: (touchArray[0].y + touchArray[1].y + touchArray[2].y) / 3,
-          };
-
-          // 3-finger drag = strafe/pan movement
-          const centerDeltaX = currentCenter.x - this.lastThreeFingerCenter.x;
-          const centerDeltaY = currentCenter.y - this.lastThreeFingerCenter.y;
-
-          if (Math.abs(centerDeltaX) > 2 || Math.abs(centerDeltaY) > 2) {
-            // Minimum threshold
-            const panSensitivity = 0.005;
-
-            const right = new THREE.Vector3();
-            const forward = new THREE.Vector3();
-            this.camera.getWorldDirection(forward);
-            right.crossVectors(forward, this.camera.up);
-            right.normalize();
-
-            // Horizontal pan (strafe left/right)
-            this.camera.position.addScaledVector(
-              right,
-              -centerDeltaX * panSensitivity
-            );
-
-            // Vertical pan (up/down)
-            this.camera.position.y += centerDeltaY * panSensitivity;
-          }
-
-          this.lastThreeFingerCenter = currentCenter;
-        }
-
-        storedTouch.x = touch.clientX;
-        storedTouch.y = touch.clientY;
+      const st = this.touches.get(touch.identifier);
+      if (st) {
+        st.x = touch.clientX;
+        st.y = touch.clientY;
       }
     }
+    const a = Array.from(this.touches.values()).slice(0, 2);
+    if (a.length < 2) return;
+    const dist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+    const cx = (a[0].x + a[1].x) / 2;
+    const cy = (a[0].y + a[1].y) / 2;
+
+    if (this.lastPinchDistance > 0) {
+      const forward = new THREE.Vector3();
+      this.camera.getWorldDirection(forward);
+      // pinch: dolly along view direction
+      this.camera.position.addScaledVector(forward, (dist - this.lastPinchDistance) * 0.06);
+      // two-finger drag: pan (grab-the-world — strafe on X, lift on Y)
+      const panX = cx - this.lastTwoFingerCenter.x;
+      const panY = cy - this.lastTwoFingerCenter.y;
+      const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
+      this.camera.position.addScaledVector(right, -panX * 0.025);
+      this.camera.position.y += panY * 0.025;
+    }
+    this.lastPinchDistance = dist;
+    this.lastTwoFingerCenter.x = cx;
+    this.lastTwoFingerCenter.y = cy;
   }
 
   onTouchEnd(event) {
@@ -290,6 +274,20 @@ export class FirstPersonControls {
       this.velocity.x -= this.direction.x * this.movementSpeed * delta;
     }
 
+    const forward = new THREE.Vector3();
+    if (this.orbitTarget) {
+      // Orbit mode: only single-finger DRAG orbits (orbitDrag sets the view).
+      // update() must NOT re-lock lookAt every frame, or two-finger pan/zoom
+      // would snap back to the selection. Just apply WASD along the current
+      // orientation and leave the view where the user put it.
+      this.camera.getWorldDirection(forward);
+      const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
+      this.camera.position.addScaledVector(forward, -this.velocity.z);
+      this.camera.position.addScaledVector(right, -this.velocity.x);
+      this.prevTime = time;
+      return;
+    }
+
     const phi = THREE.MathUtils.degToRad(90 - this.lat);
     const theta = THREE.MathUtils.degToRad(this.lon);
 
@@ -300,7 +298,6 @@ export class FirstPersonControls {
 
     this.camera.lookAt(lookAt);
 
-    const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
 
     const right = new THREE.Vector3();
@@ -311,6 +308,20 @@ export class FirstPersonControls {
     this.camera.position.addScaledVector(right, -this.velocity.x);
 
     this.prevTime = time;
+  }
+
+  // Orbit the camera around orbitTarget by drag deltas (screen px).
+  orbitDrag(dx, dy) {
+    const t = this.orbitTarget;
+    if (!t) return;
+    const offset = this.camera.position.clone().sub(t);
+    const s = new THREE.Spherical().setFromVector3(offset);
+    s.theta -= dx * 0.006;
+    s.phi -= dy * 0.006;
+    s.phi = Math.max(0.15, Math.min(Math.PI - 0.15, s.phi));
+    offset.setFromSpherical(s);
+    this.camera.position.copy(t).add(offset);
+    this.camera.lookAt(t);
   }
 
   reset() {

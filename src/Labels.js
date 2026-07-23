@@ -230,11 +230,14 @@ export class LabelManager {
   applyViewToOverlay(label) {
     const overlay = this.overlays.get(label.id);
     if (!overlay) return;
-    const v = this.currentView || { mode: "all", classId: null };
+    // Default is "hidden": overlays are off until the user opts into a view,
+    // so exploring the raw mesh isn't blanketed by every label/proposal.
+    const v = this.currentView || { mode: "hidden", classId: null };
     const cls = LABEL_CLASSES.find((c) => c.id === label.class);
     let visible = true;
     let dim = false;
     if (v.classId) visible = label.class === v.classId;
+    else if (v.mode === "hidden") visible = false;
     else if (v.mode === "untagged") dim = true;
     else if (v.mode === "confirmed") visible = label.confidence === "confirmed";
     else if (v.mode === "proposals") visible = label.confidence === "flagged";

@@ -53,7 +53,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "erase-toggle-1";
+const BUILD_VERSION = "orbit-selection-2";
 
 class MeshExplorer {
   constructor() {
@@ -315,24 +315,36 @@ class MeshExplorer {
       });
     });
 
-    // Handle touch taps for mobile
-    let tapTimeout = null;
+    // Touch tap-to-select: only fire on a genuine STATIONARY single-finger
+    // tap. A one-finger orbit drag ends in touchend too, so gate hard on
+    // travel + duration + single-finger (multi-touch = zoom/pan, never tag).
+    let tStart = null;
+    let multiTouch = false;
+    canvas.addEventListener(
+      "touchstart",
+      (event) => {
+        if (event.touches.length > 1) {
+          multiTouch = true;
+          tStart = null;
+          return;
+        }
+        multiTouch = false;
+        const t = event.touches[0];
+        tStart = { x: t.clientX, y: t.clientY, t: performance.now() };
+      },
+      { passive: true }
+    );
     canvas.addEventListener("touchend", (event) => {
-      if (event.touches.length === 0 && event.changedTouches.length === 1) {
-        const touch = event.changedTouches[0];
-        // Use timeout to distinguish tap from drag
-        if (tapTimeout) clearTimeout(tapTimeout);
-        tapTimeout = setTimeout(() => {
-          this.handleSurfaceSelection(touch.clientX, touch.clientY, {});
-        }, 100);
-      }
-    });
-
-    canvas.addEventListener("touchmove", () => {
-      if (tapTimeout) {
-        clearTimeout(tapTimeout);
-        tapTimeout = null;
-      }
+      if (multiTouch || !tStart) return; // was a gesture, not a tap
+      if (event.touches.length !== 0 || event.changedTouches.length !== 1) return;
+      const t = event.changedTouches[0];
+      const dx = t.clientX - tStart.x;
+      const dy = t.clientY - tStart.y;
+      const moved = dx * dx + dy * dy > 100; // >10px travel = an orbit, not a tap
+      const slow = performance.now() - tStart.t > 500; // long press ≠ tap
+      tStart = null;
+      if (moved || slow) return;
+      this.handleSurfaceSelection(t.clientX, t.clientY, {});
     });
 
     window.addEventListener("keydown", (event) => {
@@ -475,8 +487,28 @@ class MeshExplorer {
       this.updateReviewSheet();
     } else {
       this.showLabelPanel();
+      // in explore, drag now orbits around the live selection
+      if (this.controls) this.controls.orbitTarget = this.selectionCenter();
     }
     this.syncDock();
+  }
+
+  // World-space centroid of the pending selection (sampled), for orbit + focus.
+  selectionCenter() {
+    if (!this.pending || !this.pending.selected.size) return null;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    let n = 0;
+    outer: for (const [mesh, faces] of this.pending.selected) {
+      const pos = mesh.geometry.getAttribute("position");
+      const index = mesh.geometry.index;
+      for (const f of faces) {
+        const idx = index ? index.getX(f * 3) : f * 3;
+        box.expandByPoint(v.fromBufferAttribute(pos, idx).applyMatrix4(mesh.matrixWorld));
+        if (++n >= 600) break outer; // a sample frames it fine
+      }
+    }
+    return box.isEmpty() ? null : box.getCenter(new THREE.Vector3());
   }
 
   pushPendingHistory() {
@@ -545,8 +577,11 @@ class MeshExplorer {
   }
 
   quietDisarm() {
-    this.setTool("tap");
-    this.editIntent = "add";
+    this.setIntent("add"); // erase off for the next item; keep current tool
+    if (this.controls && this.controls.orbitTarget) {
+      this.controls.orbitTarget = null;
+      this.controls.syncFromCamera();
+    }
     if (this.editingLabelId && this.labels) {
       this.labels.setOverlayVisible(this.editingLabelId, true);
     }
@@ -627,8 +662,11 @@ class MeshExplorer {
   }
 
   cancelPendingSelection() {
-    this.setTool("tap");
-    this.editIntent = "add";
+    this.setIntent("add"); // erase off; keep the user's current tool
+    if (this.controls && this.controls.orbitTarget) {
+      this.controls.orbitTarget = null; // back to free look
+      this.controls.syncFromCamera(); // adopt current orientation (no snap)
+    }
     // In review, "cancel" means discard edits: re-present the item fresh.
     if (this.mode === "review" && this.reviewAdjust && this.review) {
       this.review.show(this.review.index);
@@ -842,9 +880,9 @@ class MeshExplorer {
     this.review.streamer = this.streamer;
 
     this.mode = "review";
-    this.editTool = "navigate"; // orbit to inspect; pick a tool to adjust
     this.controls.enabled = false;
     this.orbit.enabled = true;
+    this.setTool("navigate"); // orbit to inspect; pick a tool to adjust
     // Seed the orbit target with the current view direction so the first
     // frame doesn't snap toward a stale target.
     const dir = new THREE.Vector3();
@@ -863,13 +901,12 @@ class MeshExplorer {
     this.quietDisarm();
     this.reviewAdjust = false;
     this.mode = "explore";
-    this.editTool = "navigate";
     if (this.orbit) this.orbit.enabled = false;
     this.controls.enabled = true;
     this.controls.syncFromCamera();
+    this.setTool("navigate"); // resets FP paintMode for explore
     this.showToolbar(true);
     this.syncModeToggle();
-    this.syncToolbar();
     this.renderLabelList();
   }
 
@@ -883,27 +920,59 @@ class MeshExplorer {
   // (you move between clicks); brush/lasso lock the active controller so the
   // gesture is ours. Reset to tap whenever a selection ends.
   setTool(tool) {
-    // brush/lasso need a selection to act on; fall back to tap
-    if ((tool === "brush" || tool === "lasso") && !this.pending) tool = "tap";
     this.editTool = tool;
+    const painting = tool === "brush" || tool === "lasso";
     if (this.paint) {
       this.paint.setIntent(this.editIntent);
-      // PaintTools only engages for brush/lasso; navigate/tap leave it off
-      this.paint.setTool(tool === "brush" || tool === "lasso" ? tool : "tap");
+      this.paint.setTool(painting ? tool : "tap");
     }
-    // Camera is free for navigate + tap (drag looks); locked for brush/lasso
-    // so the gesture owns the pointer.
-    const locked = tool === "brush" || tool === "lasso";
+    // Never fully lock the camera while painting: single finger / mouse paints,
+    // but TWO fingers still navigate (and PaintTools ignores multi-touch). So
+    // paint tools coexist with nav — you don't have to switch to Move to pan.
     if (this.mode === "review") {
-      if (this.orbit) this.orbit.enabled = !locked;
+      if (this.orbit) {
+        this.orbit.enabled = true;
+        // one-finger / left-drag = paint when a tool is active (so orbit
+        // ignores them); two-finger + right/middle mouse still dolly/pan.
+        this.orbit.touches = {
+          ONE: painting ? null : THREE.TOUCH.ROTATE,
+          TWO: THREE.TOUCH.DOLLY_PAN,
+        };
+        this.orbit.mouseButtons = {
+          LEFT: painting ? null : THREE.MOUSE.ROTATE,
+          MIDDLE: THREE.MOUSE.DOLLY,
+          RIGHT: THREE.MOUSE.PAN,
+        };
+      }
     } else if (this.controls) {
-      this.controls.enabled = !locked;
+      this.controls.enabled = true;
+      this.controls.paintMode = painting;
     }
     this.syncToolbar();
   }
 
   // Apply a paint gesture's hit faces per intent (add merges, remove deletes).
+  // A brush/lasso ADD with nothing selected STARTS a fresh selection, so the
+  // paint tools work standalone (no priming tap required).
   applyPaint(intent, map) {
+    if (intent === "add" && !this.pending) {
+      const sel = new Map();
+      for (const [mesh, faces] of map) sel.set(mesh, new Set(faces));
+      let targetClass = "roof-flat";
+      const first = [...map.entries()][0];
+      if (first && first[1].size) {
+        const f0 = [...first[1]][0];
+        targetClass = this.selector.classify(this.selector.faceWorldNormal(first[0], f0));
+      }
+      this.pending = { selected: sel, targetClass, clicks: 1 };
+      this.pending.faceCount = 0;
+      this.pending.suggested = this.labels ? this.labels.suggestFor(this.pending) : "other";
+      this.pickClass(this.pending.suggested);
+      this.pickConfidence("confirmed");
+      this.pending.clicks = 2; // suggestion applied; don't re-pick as it grows
+      this.refreshPending();
+      return;
+    }
     if (!this.pending) return;
     if (intent === "add") {
       for (const [mesh, faces] of map) {
@@ -919,7 +988,6 @@ class MeshExplorer {
         if (!set.size) this.pending.selected.delete(mesh);
       }
       if (!this.pending.selected.size && this.mode === "explore") {
-        this.setTool("tap");
         this.cancelPendingSelection();
         return;
       }
@@ -1106,8 +1174,13 @@ class MeshExplorer {
     this.ui = {
       panel: document.getElementById("label-panel"),
       summary: document.getElementById("lp-summary"),
-      classes: document.getElementById("lp-classes"),
-      conf: document.getElementById("lp-conf"),
+      classGrid: document.getElementById("lp-classgrid"),
+      classPill: document.getElementById("lp-class"),
+      classDot: document.getElementById("lp-class-dot"),
+      className: document.getElementById("lp-class-name"),
+      confBtn: document.getElementById("lp-conf"),
+      confDot: document.getElementById("lp-conf-dot"),
+      confName: document.getElementById("lp-conf-name"),
       deleteBtn: document.getElementById("lp-delete"),
       save: document.getElementById("lp-save"),
       cancel: document.getElementById("lp-cancel"),
@@ -1120,25 +1193,28 @@ class MeshExplorer {
     this.pickedClass = null;
     this.pickedConfidence = "confirmed";
 
+    // class picker lives in a popover; the pill in the bar opens it
     for (const cls of LABEL_CLASSES) {
       const b = document.createElement("button");
       b.className = "class-btn";
       b.dataset.cls = cls.id;
       b.style.setProperty("--chip", cls.color);
       b.textContent = cls.name;
-      b.addEventListener("click", () => this.pickClass(cls.id));
-      this.ui.classes.appendChild(b);
+      b.addEventListener("click", () => {
+        this.pickClass(cls.id);
+        this.ui.classGrid.classList.remove("open");
+      });
+      this.ui.classGrid.appendChild(b);
     }
-
-    for (const conf of CONFIDENCE_LEVELS) {
-      const b = document.createElement("button");
-      b.className = "conf-btn";
-      b.dataset.conf = conf.id;
-      b.style.setProperty("--chip", conf.color);
-      b.textContent = conf.name;
-      b.addEventListener("click", () => this.pickConfidence(conf.id));
-      this.ui.conf.appendChild(b);
-    }
+    this.ui.classPill.addEventListener("click", () =>
+      this.ui.classGrid.classList.toggle("open")
+    );
+    // confidence is a single pill that cycles confirmed → unsure → flagged
+    this.ui.confBtn.addEventListener("click", () => {
+      const order = CONFIDENCE_LEVELS.map((c) => c.id);
+      const i = order.indexOf(this.pickedConfidence);
+      this.pickConfidence(order[(i + 1) % order.length]);
+    });
 
     // Paint tools: lasso (mouse) / brush (touch), add OR remove per intent.
     // Reads candidates live and applies hits through applyPaint.
@@ -1195,8 +1271,8 @@ class MeshExplorer {
         this.renderLabelList();
       }
     });
-    // View switcher: mode segments + per-class isolation dots.
-    this.viewMode = "all";
+    // View switcher: overlays default OFF (clean mesh); user opts into a view.
+    this.viewMode = "hidden";
     this.isolatedClass = null;
     document.getElementById("view-modes").addEventListener("click", (event) => {
       const btn = event.target.closest(".view-btn");
@@ -1240,43 +1316,43 @@ class MeshExplorer {
 
   pickClass(id) {
     this.pickedClass = id;
-    for (const b of this.ui.classes.children) {
+    const cls = LABEL_CLASSES.find((c) => c.id === id);
+    if (this.ui.classDot) this.ui.classDot.style.background = cls ? cls.color : "#fff";
+    if (this.ui.className) this.ui.className.textContent = cls ? cls.name : id;
+    for (const b of this.ui.classGrid.children) {
       b.classList.toggle("active", b.dataset.cls === id);
     }
   }
 
   pickConfidence(id) {
     this.pickedConfidence = id;
-    for (const b of this.ui.conf.children) {
-      b.classList.toggle("active", b.dataset.conf === id);
-    }
+    const conf = CONFIDENCE_LEVELS.find((c) => c.id === id);
+    if (this.ui.confDot) this.ui.confDot.style.background = conf ? conf.color : "#fff";
+    if (this.ui.confName) this.ui.confName.textContent = conf ? conf.name : id;
   }
 
   showLabelPanel() {
     if (!this.ui || !this.pending) return;
     const p = this.pending;
-    const tiles = p.selected.size;
     const editing = !!this.editingLabelId;
-    this.ui.summary.textContent =
-      (editing ? "EDITING · " : "") +
-      `${p.faceCount.toLocaleString()} faces · ${tiles} tile${tiles === 1 ? "" : "s"}` +
-      (p.clicks > 1 ? ` · ${p.clicks} clicks` : "") +
-      ` · suggested: ${this.labels ? this.labels.className(p.suggested) : p.suggested}`;
-    // Preselect the suggestion on a fresh selection; keep the user's picks
-    // while they refine (add/sub/grow/shrink) or edit an existing label.
+    this.ui.summary.textContent = `${p.faceCount.toLocaleString()} faces`;
+    // Preselect the suggested class on a fresh selection; keep the user's
+    // picks while they refine or edit an existing label.
     if (p.clicks === 1 && !editing) {
       this.pickClass(p.suggested);
       this.pickConfidence("confirmed");
     }
     this.ui.deleteBtn.style.display = editing ? "" : "none";
-    this.ui.save.textContent = editing ? "Update label" : "Save label";
+    this.ui.save.textContent = editing ? "Update" : "Save";
+    this.ui.classGrid.classList.remove("open"); // bar first; picker on demand
     this.ui.panel.classList.add("active");
     this.showDock(true);
   }
 
   saveLabel() {
     if (!this.pending || !this.labels || !this.pickedClass) return;
-    if (this.editingLabelId) {
+    const wasEditing = !!this.editingLabelId;
+    if (wasEditing) {
       this.labels.update(this.editingLabelId, {
         selected: this.pending.selected,
         classId: this.pickedClass,
@@ -1293,6 +1369,12 @@ class MeshExplorer {
       });
     }
     this.cancelPendingSelection();
+    // Reveal what was just tagged: if overlays are hidden, flip to Tagged so
+    // the new label is visible (don't override a filter the user chose).
+    if (this.mode === "explore" && this.viewMode === "hidden") {
+      this.viewMode = "all";
+      this.syncViewUI();
+    }
     this.renderLabelList();
   }
 
@@ -1301,11 +1383,11 @@ class MeshExplorer {
   // Explore/Review switch, so no Review button here.
   renderLabelList() {
     if (!this.ui || !this.labels) return;
-    const mesh = this.mode === "explore";
-    this.ui.card.classList.toggle("active", mesh && !this.pending);
+    if (this.mode === "review") return; // review owns overlay visibility
+    this.ui.card.classList.toggle("active", !this.pending);
     const labels = this.labels.list;
     this.ui.count.textContent = `${labels.length} label${labels.length === 1 ? "" : "s"}`;
-    this.labels.applyView(); // re-assert the active view filter
+    this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
     const covEl = document.getElementById("labels-coverage");
     if (labels.length) {
       const compute = () => {
@@ -1331,11 +1413,10 @@ class MeshExplorer {
 
     if (isTouchDevice) {
       infoDiv.innerHTML = `
-        <strong>Touch Controls:</strong><br>
-        1 finger - Look around<br>
-        2 finger pinch - Move forward/back<br>
-        3 finger drag - Pan left/right/up/down<br>
-        Tap - Select surface ("+ Add" extends)
+        <strong>Controls</strong><br>
+        1 finger — orbit / look<br>
+        2 fingers — pinch to zoom, drag to pan<br>
+        Pick a tool below to tag. <b>Move</b> = camera only.
       `;
     } else {
       infoDiv.innerHTML = `

@@ -125,6 +125,75 @@
     }
     .sheet.active { display: block; }
 
+    /* compact commit cluster, bottom-right (out of the way of the selection) */
+    #label-panel {
+      display: none;
+      position: absolute;
+      right: 12px;
+      bottom: calc(84px + env(safe-area-inset-bottom));
+      width: max-content;
+      max-width: 94vw;
+      z-index: 845;
+    }
+    #label-panel.active { display: block; }
+    .commit-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border-radius: 999px;
+      box-shadow: var(--shadow);
+      padding: 8px 10px;
+    }
+    /* the class pill is the primary control: shows the current surface,
+       tap to change */
+    .commit-class {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--ink);
+      border: none;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+    }
+    .commit-class .dot { width: 12px; height: 12px; }
+    .commit-class .caret { color: rgba(255,255,255,0.7); font-size: 11px; }
+    .commit-conf {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .commit-count { font-size: 12px; color: var(--ink-soft); font-weight: 600; }
+    /* class picker popover above the bar, right-aligned */
+    .class-pop {
+      display: none;
+      position: absolute;
+      right: 0;
+      bottom: 100%;
+      margin-bottom: 8px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 10px;
+      grid-template-columns: repeat(2, minmax(140px, 1fr));
+      gap: 8px;
+      width: max-content;
+      max-width: 92vw;
+    }
+    .class-pop.open { display: grid; }
+
     .sheet-utility {
       display: flex;
       align-items: center;
@@ -477,48 +546,45 @@
     }
     #labels-menu button.danger-text { color: var(--danger); }
 
-    /* labels card (top right) */
+    /* top-right: just a ⋯ button; its menu holds status + view + map */
     #labels-card {
       display: none;
       position: absolute;
-      top: 10px;
-      right: 10px;
-      width: min(84vw, 280px);
+      top: calc(12px + env(safe-area-inset-top));
+      right: 12px;
+      z-index: 850;
+    }
+    #labels-card.active { display: block; }
+    #labels-menu {
+      position: absolute;
+      top: 48px;
+      right: 0;
+      width: 244px;
+      max-width: 76vw;
       background: var(--surface);
       color: var(--ink);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      font-size: 13px;
-      padding: 10px 12px;
+      padding: 12px;
       box-sizing: border-box;
     }
-    #labels-card.active { display: block; }
-    .lc-head {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 6px;
+    .menu-status { font-weight: 700; margin-bottom: 4px; }
+    .menu-section {
+      font-size: 10px;
       font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      margin: 8px 0 5px;
     }
-    .lc-head .ghost-btn {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--ink);
-      cursor: pointer;
-    }
-    #labels-count { color: var(--ink-soft); font-weight: 600; }
-    .coverage { font-size: 11px; color: var(--confirm); font-weight: 700; }
+    #labels-count { color: var(--ink); }
+    .coverage { font-size: 12px; color: var(--confirm); font-weight: 700; margin-left: 4px; }
     .view-row {
       display: flex;
       gap: 4px;
       flex-wrap: wrap;
       align-items: center;
-      padding: 2px 0 8px;
+      padding: 0 0 4px;
     }
     .view-btn {
       flex: 1;
@@ -589,13 +655,11 @@
       .class-hero { font-size: 18px; padding: 10px 12px; }
       .btn-primary { padding: 12px 14px; }
       .btn-quiet { padding: 12px 10px; font-size: 13px; }
-      #labels-list { max-height: 26vh; }
-      /* Dock is a top-right gooey FAB on every size; on phones the labels
-         card sits top-right too, so give the dock a bit of top offset to
-         clear it and keep the FAB thumb-sized. */
       #toolbar { padding: 4px; gap: 0; }
       .tool-ico { width: 44px; min-height: 46px; }
-      #labels-card { max-width: 46vw; }
+      /* commit bar stays a slim pill; class picker pops as 2 columns */
+      .class-pop { grid-template-columns: repeat(2, 1fr); }
+      .commit-class { font-size: 14px; padding: 9px 12px; }
     }
   </style>
 </head>
@@ -651,22 +715,24 @@
     </div>
   </div>
 
-  <!-- top-right: map status + view filters + tucked utilities -->
+  <!-- top-right: a single ⋯ button; everything lives in its menu -->
   <div id="labels-card">
-    <div class="lc-head">
-      <strong id="labels-count">0</strong>
-      <span id="labels-coverage" class="coverage"></span>
-      <span class="lp-spacer"></span>
-      <button id="labels-menu-btn" class="round-btn" title="More">⋯</button>
-    </div>
-    <div class="view-row" id="view-modes">
-      <button class="view-btn active" data-view="all">All</button>
-      <button class="view-btn" data-view="untagged" title="Dim labeled areas so remaining work stands out">Untagged</button>
-      <button class="view-btn" data-view="confirmed" title="Confirmed only">✓</button>
-      <button class="view-btn" data-view="proposals" title="Proposals only">⚑</button>
-    </div>
-    <div class="view-row" id="view-classes"></div>
+    <button id="labels-menu-btn" class="round-btn" title="Map & view">⋯</button>
     <div id="labels-menu" class="menu">
+      <div class="menu-status">
+        <strong id="labels-count">0</strong>
+        <span id="labels-coverage" class="coverage"></span>
+      </div>
+      <div class="menu-section">Overlays</div>
+      <div class="view-row" id="view-modes">
+        <button class="view-btn active" data-view="hidden" title="Hide all overlays — clean mesh">Off</button>
+        <button class="view-btn" data-view="all" title="Show all tagged surfaces">Tagged</button>
+        <button class="view-btn" data-view="untagged" title="Dim labeled areas so remaining work stands out">Untagged</button>
+        <button class="view-btn" data-view="confirmed" title="Confirmed only">✓</button>
+        <button class="view-btn" data-view="proposals" title="Proposals only">⚑</button>
+      </div>
+      <div class="view-row" id="view-classes"></div>
+      <div class="menu-section">Map</div>
       <button id="labels-export">⬇ Export JSON</button>
       <button id="labels-auto">✨ Auto-tag map</button>
       <button id="labels-clear" class="danger-text">Clear all labels</button>
@@ -695,7 +761,28 @@
       <svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>Shrink</button>
   </div>
 
-  <!-- explore: commit a label -->
+  <!-- explore: slim commit bar. Suggested class shown as a pill; the full
+       class picker is a popover you open only to change it. -->
+  <div id="label-panel">
+    <div id="lp-classgrid" class="class-pop"></div>
+    <div class="commit-bar">
+      <button id="lp-cancel" class="icon-quiet" title="Cancel">✕</button>
+      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
+      <button id="lp-class" class="commit-class">
+        <span class="dot" id="lp-class-dot"></span>
+        <span id="lp-class-name">—</span>
+        <span class="caret">▾</span>
+      </button>
+      <button id="lp-conf" class="commit-conf" title="Cycle confidence">
+        <span class="dot" id="lp-conf-dot"></span><span id="lp-conf-name">Confirmed</span>
+      </button>
+      <span class="lp-spacer"></span>
+      <span id="lp-summary" class="commit-count"></span>
+      <button id="lp-save" class="btn-primary">Save</button>
+    </div>
+  </div>
+
+  <!-- review card -->
   <div id="review-actions" class="sheet">
     <div class="sheet-utility">
       <span id="rh-progress"></span>

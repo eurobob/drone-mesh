@@ -50,6 +50,10 @@ export class PaintTools {
     this.gesture = null;
     this._raf = null;
     this._movePt = null;
+    // Multi-touch = navigation, never tagging. Count active touch pointers;
+    // a second finger suspends painting until all fingers lift.
+    this.touchCount = 0;
+    this.suspended = false;
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.style.cssText =
@@ -144,6 +148,16 @@ export class PaintTools {
 
   onPointerDown(e) {
     if (!this.enabled) return;
+    if (e.pointerType === "touch") {
+      this.touchCount++;
+      if (this.touchCount > 1) {
+        // a second finger arrived → this is a nav gesture, not a paint one
+        this.cancelGesture();
+        this.suspended = true;
+        return;
+      }
+    }
+    if (this.suspended) return;
     const snap = this.snapshotFaces();
     if (!snap.cx.length) return; // nothing to act on
     e.preventDefault();
@@ -166,7 +180,7 @@ export class PaintTools {
   }
 
   onPointerMove(e) {
-    if (!this.enabled || !this.gesture) return;
+    if (!this.enabled || this.suspended || !this.gesture) return;
     e.preventDefault();
     const [x, y] = this.rectPt(e);
     this._movePt = [x, y];
@@ -188,6 +202,10 @@ export class PaintTools {
   }
 
   onPointerUp(e) {
+    if (e.pointerType === "touch") {
+      this.touchCount = Math.max(0, this.touchCount - 1);
+      if (this.touchCount === 0) this.suspended = false; // all fingers lifted
+    }
     if (!this.gesture) return;
     e.preventDefault?.();
     const g = this.gesture;
