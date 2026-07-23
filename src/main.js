@@ -59,7 +59,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "pick-1";
+const BUILD_VERSION = "brush-occlusion-1";
 
 class MeshExplorer {
   constructor() {
@@ -967,8 +967,6 @@ class MeshExplorer {
   // A brush/lasso ADD with nothing selected STARTS a fresh selection, so the
   // paint tools work standalone (no priming tap required).
   applyPaint(intent, map) {
-    // Brush/lasso add freely; the depth anchor (PaintTools) already keeps a
-    // stroke from grabbing faces far away along the same sight line.
     if (intent === "add" && !this.pending) {
       const sel = new Map();
       for (const [mesh, faces] of map) sel.set(mesh, new Set(faces));
@@ -1031,6 +1029,84 @@ class MeshExplorer {
     } catch (e) {
       /* CORS-tainted or unsupported — leave as-is */
     }
+  }
+
+  // Brush: raycast the frontmost face under the cursor (occlusion-correct
+  // seed), then flood the connected surface from it, keeping faces that are
+  // in the brush disc AND within a depth band of the hit surface. The depth
+  // band rejects anything behind (back walls, floor beyond a roof); the flood
+  // + disc keep it local and contiguous. One ray per move, so it's cheap.
+  onBrush(px, py, radiusPx) {
+    if (!this.currentMesh || !this.selector) return;
+    const hit = this.pickSurfaceFace(px, py);
+
+    if (this.editIntent === "remove") {
+      if (!this.pending || !hit) return;
+      // remove the connected patch of the pending selection under the cursor
+      const rm = this.selector.floodFromFace(
+        hit.mesh,
+        hit.face,
+        this.brushAccept(px, py, radiusPx, hit.dist, (m, f) => {
+          const s = this.pending.selected.get(m);
+          return s ? s.has(f) : false;
+        }),
+        this.currentMesh
+      );
+      if (rm.size && this.pending.selected.has(hit.mesh)) this.applyPaint("remove", rm);
+      return;
+    }
+
+    if (!hit) return;
+    const added = this.selector.floodFromFace(
+      hit.mesh,
+      hit.face,
+      this.brushAccept(px, py, radiusPx, hit.dist),
+      this.currentMesh
+    );
+    if (added.size) this.applyPaint("add", added);
+  }
+
+  // accept(mesh, faceIdx): face centroid is in the brush disc AND within a
+  // depth band of the hit surface (+ optional extra predicate).
+  brushAccept(px, py, radiusPx, anchorDist, extra) {
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    const r2 = radiusPx * radiusPx;
+    const band = Math.max(1.5, anchorDist * 0.06);
+    const cam = this.camera.position;
+    const c = new THREE.Vector3();
+    const v = new THREE.Vector3();
+    return (mesh, f) => {
+      if (extra && !extra(mesh, f)) return false;
+      const pos = mesh.geometry.getAttribute("position");
+      const index = mesh.geometry.index;
+      c.set(0, 0, 0);
+      for (let k = 0; k < 3; k++) {
+        const vi = index ? index.getX(f * 3 + k) : f * 3 + k;
+        c.add(v.fromBufferAttribute(pos, vi));
+      }
+      c.multiplyScalar(1 / 3).applyMatrix4(mesh.matrixWorld);
+      if (Math.abs(c.distanceTo(cam) - anchorDist) > band) return false; // behind → reject
+      c.project(this.camera);
+      if (c.z < -1 || c.z > 1) return false;
+      const sx = (c.x * 0.5 + 0.5) * w;
+      const sy = (-c.y * 0.5 + 0.5) * h;
+      const dx = sx - px, dy = sy - py;
+      return dx * dx + dy * dy <= r2;
+    };
+  }
+
+  // The frontmost face under a canvas pixel: { mesh, face, dist } or null.
+  pickSurfaceFace(px, py) {
+    if (!this.currentMesh) return null;
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    this.mouse.x = (px / w) * 2 - 1;
+    this.mouse.y = -(py / h) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const hits = this.raycaster.intersectObject(this.currentMesh, true);
+    if (!hits.length || hits[0].faceIndex == null) return null;
+    return { mesh: hits[0].object, face: hits[0].faceIndex, dist: hits[0].distance };
   }
 
   // Distance from the camera to the frontmost mesh surface at a canvas pixel,
@@ -1263,6 +1339,7 @@ class MeshExplorer {
       getCandidates: (intent) => this.paintCandidates(intent),
       onGestureStart: () => this.pushPendingHistory(),
       onApply: (intent, map) => this.applyPaint(intent, map),
+      onBrush: (px, py, radius) => this.onBrush(px, py, radius),
       pickDepth: (px, py) => this.pickSurfaceDepth(px, py),
     });
     this.setupToolbar();

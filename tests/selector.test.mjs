@@ -78,12 +78,8 @@ assert(count(g2) === 8, `second grow completes the wall (got ${count(g2)})`);
 const s1 = selector.shrinkSelection(r1.selected, root);
 assert(count(s1) === 0, `shrink erodes boundary faces (got ${count(s1)})`);
 
-// --- connectedWithin: brush connectivity constraint ---
-// allowed = ground faces (meshA 0-3, meshB 0-1) PLUS the disconnected wall
-// (meshC 0-1). Seeding from a ground face must NOT reach the wall (the wall
-// only shares the x=2 edge with meshB, but connectedWithin bridges any open
-// edge — so include it and confirm the WALL is reachable via the shared edge,
-// then confirm an ISOLATED mesh is not).
+// --- connectedWithin: brush orphan pruning (keep only faces connected to
+// the seed). An isolated mesh in the allowed set must be dropped.
 const isolated = makeMesh([50, 0, 50, 51, 0, 50, 51, 0, 51, 50, 0, 51], [0, 2, 1, 0, 3, 2]);
 root.add(isolated);
 root.updateMatrixWorld(true);
@@ -92,10 +88,16 @@ const allowed = new Map([
   [meshB, new Set([0, 1])],
   [isolated, new Set([0, 1])],
 ]);
-const seeds = new Map([[meshA, new Set([0])]]);
-const conn = selector.connectedWithin(seeds, allowed, root);
-assert((conn.get(meshA)?.size ?? 0) === 4, "connectedWithin reaches all of meshA");
-assert((conn.get(meshB)?.size ?? 0) === 2, "connectedWithin bridges to adjacent meshB");
-assert(!conn.has(isolated), "connectedWithin does NOT reach a spatially isolated mesh (orphan dropped)");
+const conn = selector.connectedWithin(new Map([[meshA, new Set([0])]]), allowed, root);
+assert((conn.get(meshA)?.size ?? 0) === 4, "connectedWithin keeps the seed surface");
+assert(!conn.has(isolated), "connectedWithin drops the disconnected orphan");
+
+// --- floodFromFace: brush surface flood with an accept predicate ---
+// seed always kept; accept excludes meshB → can't reach meshC (only linked
+// via meshB) nor the isolated mesh.
+const flood = selector.floodFromFace(meshA, 0, (m) => m !== meshB, root);
+assert((flood.get(meshA)?.size ?? 0) === 4, "floodFromFace fills the seed surface");
+assert(!flood.has(meshB), "floodFromFace honours the accept predicate");
+assert(!flood.has(meshC) && !flood.has(isolated), "floodFromFace stays on the connected surface");
 
 console.log("\nAll selector tests passed.");

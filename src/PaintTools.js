@@ -36,13 +36,14 @@ export class PaintTools {
   // canvas pixel, or null if the ray misses. Used to anchor gestures to the
   // surface under the cursor so they don't also grab faces far away along the
   // same sight line (e.g. the ground seen past a roof edge).
-  constructor({ domElement, container, camera, getCandidates, onGestureStart, onGestureEnd, onApply, pickDepth }) {
+  constructor({ domElement, container, camera, getCandidates, onGestureStart, onGestureEnd, onApply, onBrush, pickDepth }) {
     this.domElement = domElement;
     this.camera = camera;
     this.getCandidates = getCandidates;
     this.onGestureStart = onGestureStart || (() => {});
     this.onGestureEnd = onGestureEnd || (() => {});
-    this.onApply = onApply || (() => {});
+    this.onApply = onApply || (() => {}); // lasso hits (map)
+    this.onBrush = onBrush || (() => {}); // brush: (px, py, radiusPx)
     this.pickDepth = pickDepth || (() => null);
 
     this.tool = "tap"; // tap (off) | brush | lasso
@@ -159,25 +160,33 @@ export class PaintTools {
       }
     }
     if (this.suspended) return;
+    const [x, y] = this.rectPt(e);
+    const mode =
+      this.tool === "brush" || this.tool === "lasso"
+        ? this.tool
+        : e.pointerType === "touch" ? "brush" : "lasso";
+
+    if (mode === "brush") {
+      // Brush: host raycasts the frontmost face under the cursor and floods
+      // the visible surface from there (occlusion-correct). No per-face
+      // snapshot / depth-band candidate set here.
+      e.preventDefault();
+      this.domElement.setPointerCapture?.(e.pointerId);
+      this.onGestureStart();
+      this.gesture = { mode: "brush" };
+      this.circle.style.display = "";
+      this.circle.setAttribute("cx", x);
+      this.circle.setAttribute("cy", y);
+      this.onBrush(x, y, BRUSH_RADIUS_PX);
+      return;
+    }
+
     const snap = this.snapshotFaces();
     if (!snap.cx.length) return; // nothing to act on
     e.preventDefault();
     this.domElement.setPointerCapture?.(e.pointerId);
     this.onGestureStart();
-    const [x, y] = this.rectPt(e);
-    // The chosen tool wins; pointer type is a fallback if somehow unset.
-    const mode = this.tool === "brush" || this.tool === "lasso"
-      ? this.tool
-      : e.pointerType === "touch" ? "brush" : "lasso";
-    // Anchor depth = distance to the surface under the first touch. Lasso
-    // keeps this fixed; brush re-anchors as it moves (follows the surface).
     this.gesture = { mode, ...snap, points: [x, y], anchor: this.pickDepth(x, y) };
-    if (mode === "brush") {
-      this.circle.style.display = "";
-      this.circle.setAttribute("cx", x);
-      this.circle.setAttribute("cy", y);
-      this.brushAt(x, y);
-    }
   }
 
   onPointerMove(e) {
@@ -194,7 +203,7 @@ export class PaintTools {
       if (g.mode === "brush") {
         this.circle.setAttribute("cx", mx);
         this.circle.setAttribute("cy", my);
-        this.brushAt(mx, my);
+        this.onBrush(mx, my, BRUSH_RADIUS_PX);
       } else {
         g.points.push(mx, my);
         this.path.setAttribute("d", this.pathData(g.points));
@@ -242,32 +251,6 @@ export class PaintTools {
     const dy = this.gesture.cy[i] - cam.y;
     const dz = this.gesture.cz[i] - cam.z;
     return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - anchor) <= band;
-  }
-
-  // Brush: hit faces within the cursor radius AND near the anchored surface
-  // depth, so it stays on what you're brushing and skips distant faces that
-  // merely fall under the cursor. Re-anchors to the surface as it moves.
-  brushAt(px, py) {
-    const g = this.gesture;
-    const d = this.pickDepth(px, py);
-    if (d != null) g.anchor = d; // follow the surface under the brush
-    const band = this.depthBand(g.anchor);
-    const hit = new Map();
-    const v = new THREE.Vector3();
-    const r2 = BRUSH_RADIUS_PX * BRUSH_RADIUS_PX;
-    const w = this.domElement.clientWidth;
-    const h = this.domElement.clientHeight;
-    for (let i = 0; i < g.cx.length; i++) {
-      if (g.removed.has(i)) continue;
-      if (!this.withinDepth(i, g.anchor, band)) continue;
-      v.set(g.cx[i], g.cy[i], g.cz[i]).project(this.camera);
-      if (v.z < -1 || v.z > 1) continue;
-      const sx = (v.x * 0.5 + 0.5) * w;
-      const sy = (-v.y * 0.5 + 0.5) * h;
-      const dx = sx - px, dy = sy - py;
-      if (dx * dx + dy * dy <= r2) this.mark(hit, g, i);
-    }
-    if (hit.size) this.onApply(this.intent, hit);
   }
 
   mark(hit, g, i) {
