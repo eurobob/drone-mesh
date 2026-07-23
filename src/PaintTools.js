@@ -32,12 +32,17 @@ export class PaintTools {
   // getCandidates(intent) → Map(mesh → Set(faceIdx)) the gesture may affect:
   //   "remove" → the current pending faces; "add" → visible unselected faces.
   // onApply(intent, map) applies the hit faces (host adds or removes).
-  constructor({ domElement, container, camera, getCandidates, onGestureStart, onApply }) {
+  // pickDepth(px, py) → camera-space distance to the frontmost surface at that
+  // canvas pixel, or null if the ray misses. Used to anchor gestures to the
+  // surface under the cursor so they don't also grab faces far away along the
+  // same sight line (e.g. the ground seen past a roof edge).
+  constructor({ domElement, container, camera, getCandidates, onGestureStart, onApply, pickDepth }) {
     this.domElement = domElement;
     this.camera = camera;
     this.getCandidates = getCandidates;
     this.onGestureStart = onGestureStart || (() => {});
     this.onApply = onApply || (() => {});
+    this.pickDepth = pickDepth || (() => null);
 
     this.tool = "tap"; // tap (off) | brush | lasso
     this.intent = "add"; // add | remove
@@ -149,7 +154,9 @@ export class PaintTools {
     const mode = this.tool === "brush" || this.tool === "lasso"
       ? this.tool
       : e.pointerType === "touch" ? "brush" : "lasso";
-    this.gesture = { mode, ...snap, points: [x, y] };
+    // Anchor depth = distance to the surface under the first touch. Lasso
+    // keeps this fixed; brush re-anchors as it moves (follows the surface).
+    this.gesture = { mode, ...snap, points: [x, y], anchor: this.pickDepth(x, y) };
     if (mode === "brush") {
       this.circle.style.display = "";
       this.circle.setAttribute("cx", x);
@@ -187,8 +194,10 @@ export class PaintTools {
     if (g.mode === "lasso" && g.points.length >= 6) {
       const hit = new Map();
       const v = new THREE.Vector3();
+      const band = this.depthBand(g.anchor);
       for (let i = 0; i < g.cx.length; i++) {
         if (g.removed.has(i)) continue;
+        if (!this.withinDepth(i, g.anchor, band)) continue; // reject background
         v.set(g.cx[i], g.cy[i], g.cz[i]).project(this.camera);
         if (v.z < -1 || v.z > 1) continue; // behind camera / clipped
         const sx = (v.x * 0.5 + 0.5) * this.domElement.clientWidth;
@@ -200,9 +209,28 @@ export class PaintTools {
     this.cancelGesture();
   }
 
-  // Brush: hit faces whose projected centroid is within the cursor radius.
+  depthBand(anchor) {
+    // absolute floor + a fraction of distance (perspective foreshortening)
+    return anchor == null ? Infinity : Math.max(2.5, anchor * 0.12);
+  }
+
+  withinDepth(i, anchor, band) {
+    if (anchor == null) return true; // no surface under cursor → don't gate
+    const cam = this.camera.position;
+    const dx = this.gesture.cx[i] - cam.x;
+    const dy = this.gesture.cy[i] - cam.y;
+    const dz = this.gesture.cz[i] - cam.z;
+    return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - anchor) <= band;
+  }
+
+  // Brush: hit faces within the cursor radius AND near the anchored surface
+  // depth, so it stays on what you're brushing and skips distant faces that
+  // merely fall under the cursor. Re-anchors to the surface as it moves.
   brushAt(px, py) {
     const g = this.gesture;
+    const d = this.pickDepth(px, py);
+    if (d != null) g.anchor = d; // follow the surface under the brush
+    const band = this.depthBand(g.anchor);
     const hit = new Map();
     const v = new THREE.Vector3();
     const r2 = BRUSH_RADIUS_PX * BRUSH_RADIUS_PX;
@@ -210,6 +238,7 @@ export class PaintTools {
     const h = this.domElement.clientHeight;
     for (let i = 0; i < g.cx.length; i++) {
       if (g.removed.has(i)) continue;
+      if (!this.withinDepth(i, g.anchor, band)) continue;
       v.set(g.cx[i], g.cy[i], g.cz[i]).project(this.camera);
       if (v.z < -1 || v.z > 1) continue;
       const sx = (v.x * 0.5 + 0.5) * w;

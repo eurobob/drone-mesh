@@ -400,20 +400,24 @@ export class SurfaceSelector {
     const positions = [];
     const tmpV = new THREE.Vector3();
     const fn = new THREE.Vector3();
-    const corner = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
     // boundary outline: edges belonging to exactly one selected face, keyed
     // by quantized world position so tile borders / UV seams read as one loop
+    // fill sits on the surface (polygonOffset handles z-fighting); only the
+    // outline is lifted a hair. Edges dedup by RAW position so seams merge.
+    const LIFT = 0.004;
     const edges = new Map();
     const Q = 0.004;
     const q = (x) => Math.round(x / Q);
-    const addEdge = (p1, p2) => {
-      const k1 = `${q(p1[0])},${q(p1[1])},${q(p1[2])}`;
-      const k2 = `${q(p2[0])},${q(p2[1])},${q(p2[2])}`;
+    const raw = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const lift = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const addEdge = (ri, rj, li, lj) => {
+      const k1 = `${q(ri[0])},${q(ri[1])},${q(ri[2])}`;
+      const k2 = `${q(rj[0])},${q(rj[1])},${q(rj[2])}`;
       const key = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
       const e = edges.get(key);
       if (e) e.count++;
-      else edges.set(key, { count: 1, a: p1.slice(), b: p2.slice() });
+      else edges.set(key, { count: 1, a: li.slice(), b: lj.slice() });
     };
 
     for (const [mesh, faceSet] of selected) {
@@ -422,18 +426,18 @@ export class SurfaceSelector {
 
       for (const f of faceSet) {
         this.faceWorldNormal(mesh, f, fn);
-        const ox = fn.x * 0.024, oy = fn.y * 0.024, oz = fn.z * 0.024;
         for (let i = 0; i < 3; i++) {
           tmpV.fromBufferAttribute(posAttr, entry.getVertIdx(f, i))
             .applyMatrix4(mesh.matrixWorld);
-          corner[i][0] = tmpV.x + ox;
-          corner[i][1] = tmpV.y + oy;
-          corner[i][2] = tmpV.z + oz;
-          positions.push(corner[i][0], corner[i][1], corner[i][2]);
+          raw[i][0] = tmpV.x; raw[i][1] = tmpV.y; raw[i][2] = tmpV.z;
+          lift[i][0] = tmpV.x + fn.x * LIFT;
+          lift[i][1] = tmpV.y + fn.y * LIFT;
+          lift[i][2] = tmpV.z + fn.z * LIFT;
+          positions.push(raw[i][0], raw[i][1], raw[i][2]); // fill on surface
         }
-        addEdge(corner[0], corner[1]);
-        addEdge(corner[1], corner[2]);
-        addEdge(corner[2], corner[0]);
+        addEdge(raw[0], raw[1], lift[0], lift[1]);
+        addEdge(raw[1], raw[2], lift[1], lift[2]);
+        addEdge(raw[2], raw[0], lift[2], lift[0]);
       }
     }
 
@@ -445,7 +449,13 @@ export class SurfaceSelector {
       transparent: true,
       opacity: 0.42,
       side: THREE.DoubleSide,
-      depthWrite: false,
+      // depthWrite TRUE: self-occlude (no near/far-slope band interleaving);
+      // polygonOffset below any label overlay so an in-progress selection
+      // always reads on top of an existing label on the same surface.
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -6,
+      polygonOffsetUnits: -6,
     });
 
     const mesh = new THREE.Mesh(geom, mat);

@@ -24,7 +24,13 @@ export const CONFIDENCE_LEVELS = [
 
 // Overlays sit just above the surface to avoid z-fighting, below the active
 // selection highlight (renderOrder 999 in SurfaceSelector).
-const OVERLAY_OFFSET = 0.02;
+// The fill sits ON the surface — z-fighting is handled by polygonOffset (a
+// depth-buffer bias, no world displacement), NOT by pushing geometry along
+// the normal. A world offset balloons the overlay off bumpy/steep meshes and
+// cracks open seams where adjacent faces point different ways. The outline is
+// lifted a hair so the lines stay above the fill.
+const OUTLINE_LIFT = 0.004; // ~4mm, minimal
+const OVERLAY_POLY_OFFSET = -4; // factor & units; beats base + cluster overlays
 const OVERLAY_RENDER_ORDER = 998;
 const OVERLAY_OPACITY = 0.45;
 const OVERLAY_EMPHASIS_OPACITY = 0.62; // item under review
@@ -85,10 +91,12 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
   const addEdge = (p1, p2) => {
     const k1 = `${q(p1[0])},${q(p1[1])},${q(p1[2])}`;
     const k2 = `${q(p2[0])},${q(p2[1])},${q(p2[2])}`;
+    // dedup by RAW position (before lift) so shared edges — incl. across
+    // seams/tiles — merge; store the lifted endpoints for drawing
     const key = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
     const e = edges.get(key);
     if (e) e.count++;
-    else edges.set(key, { count: 1, a: p1, b: p2 });
+    else edges.set(key, { count: 1, a: p1.lift, b: p2.lift });
   };
 
   for (const { t, df } of tiles) {
@@ -104,16 +112,17 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
       va.fromBufferAttribute(posAttr, vertIdx(f, 0)).applyMatrix4(mesh.matrixWorld);
       vb.fromBufferAttribute(posAttr, vertIdx(f, 1)).applyMatrix4(mesh.matrixWorld);
       vc.fromBufferAttribute(posAttr, vertIdx(f, 2)).applyMatrix4(mesh.matrixWorld);
+      // fill sits on the surface (no displacement → no cracks); polygonOffset
+      // handles z-fighting. Only the outline gets a tiny normal lift.
       n.crossVectors(e1.subVectors(vb, va), e2.subVectors(vc, va))
         .normalize()
-        .multiplyScalar(OVERLAY_OFFSET);
-      const A = [va.x + n.x, va.y + n.y, va.z + n.z];
-      const B = [vb.x + n.x, vb.y + n.y, vb.z + n.z];
-      const C = [vc.x + n.x, vc.y + n.y, vc.z + n.z];
-      positions.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2]);
-      addEdge(A, B);
-      addEdge(B, C);
-      addEdge(C, A);
+        .multiplyScalar(OUTLINE_LIFT);
+      positions.push(va.x, va.y, va.z, vb.x, vb.y, vb.z, vc.x, vc.y, vc.z);
+      const mk = (v) => ({ raw: [v.x, v.y, v.z], lift: [v.x + n.x, v.y + n.y, v.z + n.z] });
+      const A = mk(va), B = mk(vb), C = mk(vc);
+      addEdge({ 0: A.raw[0], 1: A.raw[1], 2: A.raw[2], lift: A.lift }, { 0: B.raw[0], 1: B.raw[1], 2: B.raw[2], lift: B.lift });
+      addEdge({ 0: B.raw[0], 1: B.raw[1], 2: B.raw[2], lift: B.lift }, { 0: C.raw[0], 1: C.raw[1], 2: C.raw[2], lift: C.lift });
+      addEdge({ 0: C.raw[0], 1: C.raw[1], 2: C.raw[2], lift: C.lift }, { 0: A.raw[0], 1: A.raw[1], 2: A.raw[2], lift: A.lift });
     }
   }
 
@@ -126,7 +135,13 @@ function buildFacesMesh(tileMeshes, tiles, colorHex) {
     transparent: true,
     opacity: OVERLAY_OPACITY,
     side: THREE.DoubleSide,
-    depthWrite: false,
+    // depthWrite TRUE so the overlay self-occludes: on a hip roof the near
+    // slope hides the far slope's overlay instead of both compositing into
+    // interleaved bands. polygonOffset keeps it above the base texture.
+    depthWrite: true,
+    polygonOffset: true,
+    polygonOffsetFactor: OVERLAY_POLY_OFFSET,
+    polygonOffsetUnits: OVERLAY_POLY_OFFSET,
   });
   const mesh = new THREE.Mesh(geom, mat);
   mesh.renderOrder = OVERLAY_RENDER_ORDER;
