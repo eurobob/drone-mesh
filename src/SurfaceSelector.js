@@ -498,6 +498,57 @@ export class SurfaceSelector {
   // Grow the selection by one adjacency ring: every edge-neighbour (incl.
   // across tile borders and UV seams) joins. Deliberately unconstrained by
   // class/normal — grow is the user's manual override for undershoot.
+  // Restrict a candidate face set to the connected component(s) reachable
+  // from `seeds` by edge adjacency (incl. cross-tile / UV-seam bridges),
+  // staying inside `allowed`. Used by the brush so a tag stays one connected
+  // surface — orphaned bits (floor caught while brushing a roof) drop out.
+  // seeds / allowed / return are all Map(mesh → Set(faceIdx)).
+  connectedWithin(seeds, allowed, root) {
+    this.ensureGlobalGraph(root);
+    const result = new Map();
+    const queue = [];
+    const tmpV = new THREE.Vector3();
+    const inAllowed = (mesh, f) => {
+      const s = allowed.get(mesh);
+      return s ? s.has(f) : false;
+    };
+    const push = (mesh, f) => {
+      if (!inAllowed(mesh, f)) return;
+      let s = result.get(mesh);
+      if (!s) { s = new Set(); result.set(mesh, s); }
+      if (s.has(f)) return;
+      s.add(f);
+      queue.push({ mesh, faceIdx: f });
+    };
+    for (const [mesh, set] of seeds) for (const f of set) push(mesh, f);
+
+    while (queue.length) {
+      const { mesh, faceIdx } = queue.pop();
+      const entry = this.ensureIntra(mesh);
+      const a = entry.getVertIdx(faceIdx, 0);
+      const b = entry.getVertIdx(faceIdx, 1);
+      const c = entry.getVertIdx(faceIdx, 2);
+      for (const [v1, v2, ek] of [
+        [a, b, entry.edgeKey(a, b)],
+        [b, c, entry.edgeKey(b, c)],
+        [c, a, entry.edgeKey(c, a)],
+      ]) {
+        const neigh = entry.edgeToFaces.get(ek);
+        if (neigh) for (const nf of neigh) if (nf !== faceIdx) push(mesh, nf);
+        if (
+          (!neigh || neigh.length === 1) &&
+          entry.boundaryVerts.has(v1) &&
+          entry.boundaryVerts.has(v2)
+        ) {
+          const bridge = [];
+          this._enqueueCrossTile(mesh, v1, v2, bridge, tmpV);
+          for (const q of bridge) push(q.mesh, q.faceIdx);
+        }
+      }
+    }
+    return result;
+  }
+
   growSelection(selectedMap, root) {
     this.ensureGlobalGraph(root);
     const out = new Map();

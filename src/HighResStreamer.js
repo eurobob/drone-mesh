@@ -52,8 +52,12 @@ const INDEX_GRID = 28; // cells per axis over the map footprint
 // tight: at any altitude that frames a whole district, nothing qualifies —
 // absolute distances read as "near" far too easily from elevated views.
 // (The principled future version is screen-space error, as in 3D Tiles.)
-const NATIVE_WORLD_DIST = 5; // load radius
-const ATLAS_UNLOAD_DIST = 16; // default keep-resident boundary (profile may widen)
+// Load/reveal radii are sized for NORMAL viewing distance (you inspect a
+// building from ~10-20 units, not pressed against it), not just point-blank.
+// Too tight and what's right in front of you stays base. At true altitude
+// (whole-map overview) distances exceed these, so nothing loads → clean.
+const NATIVE_WORLD_DIST = 18; // load radius
+const ATLAS_UNLOAD_DIST = 30; // keep-resident boundary (retention)
 
 // Display is gated FINER than loading: each page's geometry is split at load
 // into locale clusters (zone-grid buckets of faces). A resident page only
@@ -61,7 +65,7 @@ const ATLAS_UNLOAD_DIST = 16; // default keep-resident boundary (profile may wid
 // its far-away sibling fragments keep showing base, so enhancement never
 // appears in scattered pockets across the map.
 const ZONE_GRID = 12; // cluster zones per axis over the map footprint
-const CLUSTER_ON_DIST = 6; // reveal radius for enhanced clusters (×1.25 hysteresis)
+const CLUSTER_ON_DIST = 18; // reveal radius for enhanced clusters (matches load)
 
 // Motion gate (scene units / second). Above HI the streamer idles; it
 // resumes below LO. The gap is hysteresis so ordinary WASD nudging doesn't
@@ -70,9 +74,10 @@ const MOTION_HI = 3.5;
 const MOTION_LO = 1.2;
 
 export class HighResStreamer {
-  constructor({ scene, camera, gltfLoader, nativeSize, ringSize, nativeCap, totalCap, keepDist, maxAnisotropy }) {
+  constructor({ scene, camera, renderer, gltfLoader, nativeSize, ringSize, nativeCap, totalCap, keepDist, maxAnisotropy }) {
     this.scene = scene;
     this.camera = camera;
+    this.renderer = renderer; // for the GPU visible-page pick pass
     this.gltfLoader = gltfLoader;
     this.nativeSize = nativeSize; // texture size inside the gaze bubble
     this.ringSize = ringSize; // texture size in the surrounding ring
@@ -180,6 +185,7 @@ export class HighResStreamer {
     group.updateWorldMatrix(true, true);
     this.group = group;
 
+    this.lowRoot = lowResObject; // rendered (id-coloured) for the pick pass
     const lowTiles = [];
     if (lowResObject) {
       lowResObject.traverse((c) => {
@@ -480,24 +486,118 @@ export class HighResStreamer {
     return this._focus.copy(this._dir).multiplyScalar(ahead).add(cam);
   }
 
-  // Deferred-until-needed for atlas pages, by TRUE 3D distance: a page
-  // promotes only when it has geometry in a cell whose center (including its
-  // measured ground height) is close to the camera. High altitude = nothing
-  // close = nothing loads. Camera proximity ONLY — no gaze lookahead, no
-  // speculative middle tier.
+  // GPU pick pass: render the low-res tiles into a tiny target, each tile
+  // flat-coloured by its index, and read back which tiles own the on-screen
+  // pixels. This is exactly "the triangles in front of me" — occlusion-
+  // correct, no spatial heuristic. Returns Map(tileIndex → pixel count) or
+  // null if picking isn't available.
+  pickVisibleTiles() {
+    const r = this.renderer;
+    if (!r || !this.lowRoot || !this.tiles.length) return null;
+    try {
+      if (!this.pickRT) {
+        this.pickRT = new THREE.WebGLRenderTarget(160, 100, {
+          depthBuffer: true,
+          colorSpace: THREE.NoColorSpace,
+        });
+        this._pickBuf = new Uint8Array(160 * 100 * 4);
+        this._pickMats = [];
+      }
+      const swapped = [];
+      for (const t of this.tiles) {
+        if (!t.low) continue;
+        let m = this._pickMats[t.index];
+        if (!m) {
+          m = new THREE.MeshBasicMaterial();
+          // id in the red channel, written linearly so readback is exact
+          m.color.setRGB((t.index + 1) / 255, 0, 0, THREE.LinearSRGBColorSpace);
+          this._pickMats[t.index] = m;
+        }
+        t._pm = t.low.material;
+        t._pv = t.low.visible;
+        t.low.material = m;
+        t.low.visible = true;
+        swapped.push(t);
+      }
+      const prev = r.getRenderTarget();
+      r.setRenderTarget(this.pickRT);
+      r.setClearColor(0x000000, 1);
+      r.clear();
+      r.render(this.lowRoot, this.camera);
+      r.readRenderTargetPixels(this.pickRT, 0, 0, 160, 100, this._pickBuf);
+      r.setRenderTarget(prev);
+      for (const t of swapped) {
+        t.low.material = t._pm;
+        t.low.visible = t._pv;
+      }
+      const counts = new Map();
+      const buf = this._pickBuf;
+      for (let i = 0; i < buf.length; i += 4) {
+        const id = buf[i] - 1;
+        if (id >= 0) counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      return counts;
+    } catch (e) {
+      console.warn("pick pass failed, falling back to distance", e);
+      return null;
+    }
+  }
+
+  // Atlas load: sharpen the tiles the pick pass says are actually on screen,
+  // most-covered first, up to budget. Falls back to nearest-distance if the
+  // pick pass is unavailable.
   computeTargetsFromIndex() {
+    // Skip the pick (a GPU readback stall) during fast fly-through — we're not
+    // uploading anyway; targets refresh the moment the camera settles.
+    if (this.motionHold) return;
+    const counts = this.pickVisibleTiles();
+    if (!counts) return this.computeTargetsByDistance();
+
+    for (const t of this.tiles) t.targetSize = 0;
+    let nativeLeft = this.nativeCap;
+    let totalLeft = this.totalCap;
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const visible = new Set();
+    for (const [id, px] of ranked) {
+      const t = this.tiles[id];
+      if (!t || !t.bytes) continue;
+      visible.add(id);
+      if (totalLeft <= 0) continue;
+      t._score = -px;
+      t.targetSize = nativeLeft > 0 ? this.nativeSize : this.ringSize;
+      if (nativeLeft > 0) nativeLeft--;
+      totalLeft--;
+    }
+    // Retention: keep a resident tile that briefly left the frame so a small
+    // turn doesn't dump it (until budget is needed by on-screen tiles).
+    if (totalLeft > 0) {
+      for (const t of this.tiles) {
+        if (totalLeft <= 0) break;
+        if (t.size > 0 && t.targetSize === 0 && this._recentVisible &&
+            this._recentVisible.has(t.index)) {
+          t.targetSize = t.size;
+          totalLeft--;
+        }
+      }
+    }
+    this._recentVisible = visible;
+  }
+
+  // Fallback (no GPU pick): nearest in-view cell distance via the face index.
+  computeTargetsByDistance() {
     const cam = this.camera.position;
     const g = this.grid;
     const frustum = this._updateFrustum();
     this._cellPt = this._cellPt || new THREE.Vector3();
+    const loadDist = NATIVE_WORLD_DIST * this.rangeScale;
 
-    // Two distances per page:
-    //  dAll — nearest cell by pure distance (governs RETENTION: what you've
-    //         loaded persists regardless of where you look)
-    //  dVis — nearest cell that is in the FRUSTUM or within arm's reach
-    //         (governs NEW LOADS: never spend work on what you can't see)
-    const dAllMap = new Map();
-    const dVisMap = new Map();
+    // Rank pages by their NEAREST in-view cell distance and load closest
+    // first. The page owning the surface right in front of you has the
+    // smallest distance, so it always wins the budget — summed "presence"
+    // was wrong (a page with many mid-distance fragments beat the near one).
+    // dAll (nearest cell any direction) governs retention only.
+    const dVisMap = new Map(); // page -> nearest in-view cell distance
+    const dAllMap = new Map(); // page -> nearest cell distance (retention)
     for (let cz = 0; cz < g.n; cz++) {
       for (let cx = 0; cx < g.n; cx++) {
         const key = cz * g.n + cx;
@@ -508,43 +608,46 @@ export class HighResStreamer {
         const wy = this.cellY ? this.cellY[key] : 0;
         const d = Math.hypot(cam.x - wx, cam.y - wy, cam.z - wz);
         if (d > this.unloadDist) continue;
-        const visible =
-          d < 4 || frustum.containsPoint(this._cellPt.set(wx, wy, wz));
+        const inView =
+          d <= loadDist && (d < 4 || frustum.containsPoint(this._cellPt.set(wx, wy, wz)));
         for (const page of set) {
-          const prevAll = dAllMap.get(page);
-          if (prevAll === undefined || d < prevAll) dAllMap.set(page, d);
-          if (visible) {
-            const prevVis = dVisMap.get(page);
-            if (prevVis === undefined || d < prevVis) dVisMap.set(page, d);
+          const prev = dAllMap.get(page);
+          if (prev === undefined || d < prev) dAllMap.set(page, d);
+          if (inView) {
+            const pv = dVisMap.get(page);
+            if (pv === undefined || d < pv) dVisMap.set(page, d);
           }
         }
       }
     }
 
-    // nearest first; single tier: LOAD only visible+near, KEEP by distance
-    const entries = [...dAllMap.entries()].sort((a, b) => a[1] - b[1]);
+    for (const t of this.tiles) t.targetSize = 0;
     let nativeLeft = this.nativeCap;
     let totalLeft = this.totalCap;
-    for (const t of this.tiles) t.targetSize = 0;
-    for (const [page, dAll] of entries) {
+
+    // nearest in-view pages first, up to budget
+    const ranked = [...dVisMap.entries()].sort((a, b) => a[1] - b[1]);
+    for (const [page, dVis] of ranked) {
       const t = this.tiles[page];
       if (!t || !t.bytes || totalLeft <= 0) continue;
-      t._score = dAll;
-      const dVis = dVisMap.get(page);
-      const loadDist = NATIVE_WORLD_DIST * this.rangeScale;
-      if (t.size === 0) {
-        // fresh load: must be near AND visible
-        if (dVis !== undefined && dVis <= loadDist && nativeLeft > 0) {
-          t.targetSize = this.nativeSize;
-          nativeLeft--;
-          totalLeft--;
+      t._score = dVis;
+      t.targetSize = nativeLeft > 0 ? this.nativeSize : this.ringSize;
+      if (nativeLeft > 0) nativeLeft--;
+      totalLeft--;
+    }
+
+    // Retention: keep already-resident pages that are still within unloadDist
+    // even if they left the frame, so glancing away doesn't dump them.
+    if (totalLeft > 0) {
+      for (const t of this.tiles) {
+        if (totalLeft <= 0) break;
+        if (t.size > 0 && t.targetSize === 0) {
+          const dAll = dAllMap.get(t.index);
+          if (dAll !== undefined && dAll <= this.unloadDist) {
+            t.targetSize = t.size;
+            totalLeft--;
+          }
         }
-      } else if (dAll <= this.unloadDist) {
-        t.targetSize = Math.max(
-          t.size,
-          dVis !== undefined && dVis <= loadDist ? this.nativeSize : 0
-        );
-        totalLeft--;
       }
     }
   }

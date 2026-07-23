@@ -36,11 +36,12 @@ export class PaintTools {
   // canvas pixel, or null if the ray misses. Used to anchor gestures to the
   // surface under the cursor so they don't also grab faces far away along the
   // same sight line (e.g. the ground seen past a roof edge).
-  constructor({ domElement, container, camera, getCandidates, onGestureStart, onApply, pickDepth }) {
+  constructor({ domElement, container, camera, getCandidates, onGestureStart, onGestureEnd, onApply, pickDepth }) {
     this.domElement = domElement;
     this.camera = camera;
     this.getCandidates = getCandidates;
     this.onGestureStart = onGestureStart || (() => {});
+    this.onGestureEnd = onGestureEnd || (() => {});
     this.onApply = onApply || (() => {});
     this.pickDepth = pickDepth || (() => null);
 
@@ -224,7 +225,9 @@ export class PaintTools {
       }
       if (hit.size) this.onApply(this.intent, hit);
     }
+    const wasGesture = !!this.gesture;
     this.cancelGesture();
+    if (wasGesture) this.onGestureEnd();
   }
 
   depthBand(anchor) {

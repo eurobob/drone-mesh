@@ -8,6 +8,7 @@ import { LabelManager, LABEL_CLASSES, CONFIDENCE_LEVELS } from "./Labels.js";
 import { ReviewMode } from "./ReviewMode.js";
 import { autoTag } from "./AutoTagger.js";
 import { PaintTools } from "./PaintTools.js";
+import { Diagnostics } from "./Diagnostics.js";
 
 // Configuration toggle
 const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
@@ -46,18 +47,27 @@ const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selectio
 // ~20-40 pages resident, and cheap devices can afford that ONLY at 1024
 // (≈5.6 MB/page vs 22). Full local coverage at good quality beats patchy
 // coverage at max quality — the earlier 6-page cap starved neighbourhoods.
-const LITE_CAPS = { nativeSize: 1024, ringSize: 1024, nativeCap: 24, totalCap: 48, keepDist: 16 };
+// Touch memory is reclaimed mostly by the STATIC savers (256² base layer +
+// 1.5 pixel ratio, both below) rather than by starving the stream — so the
+// resident-page budget stays generous enough that what you look at actually
+// sharpens. ~32×1024² ≈ 240 MB streamed + ~45 MB base sits well under iOS's
+// kill threshold.
+const LITE_CAPS = { nativeSize: 1024, ringSize: 1024, nativeCap: 20, totalCap: 32, keepDist: 14 };
 const RICH_CAPS = { nativeSize: 2048, ringSize: 1024, nativeCap: 32, totalCap: 128, keepDist: 45 };
 const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "orbit-selection-2";
+const BUILD_VERSION = "pick-1";
 
 class MeshExplorer {
   constructor() {
     console.log(`[drone-mesh] build ${BUILD_VERSION}`);
+    // crash/error reporting first, so it captures anything during init.
+    // window.dmtDiag() dumps the persisted log.
+    this.diag = new Diagnostics(BUILD_VERSION);
+    window.dmtDiag = () => this.diag.dump();
     this.scene = null;
     this.camera = null;
     this.renderer = null;
@@ -175,11 +185,13 @@ class MeshExplorer {
     );
     this.camera.position.set(0, 5, 10);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    // Cap pixel ratio so high-DPI mobile screens don't allocate huge
-    // framebuffers (a common cause of WebGL context loss on phones).
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // Cap pixel ratio hard on touch: the framebuffer costs scale with DPR²,
+    // and a 3× retina phone framebuffer is a big chunk of the memory that
+    // gets the tab killed. 1.5 is plenty at arm's length.
+    const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, touch ? 1.5 : 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -195,7 +207,7 @@ class MeshExplorer {
         // preventDefault lets the browser attempt to restore the context.
         event.preventDefault();
         this.contextLost = true;
-        console.error("WebGL context lost");
+        if (this.diag) this.diag.noteContextLost();
       },
       false
     );
@@ -955,6 +967,8 @@ class MeshExplorer {
   // A brush/lasso ADD with nothing selected STARTS a fresh selection, so the
   // paint tools work standalone (no priming tap required).
   applyPaint(intent, map) {
+    // Brush/lasso add freely; the depth anchor (PaintTools) already keeps a
+    // stroke from grabbing faces far away along the same sight line.
     if (intent === "add" && !this.pending) {
       const sel = new Map();
       for (const [mesh, faces] of map) sel.set(mesh, new Set(faces));
@@ -993,6 +1007,30 @@ class MeshExplorer {
       }
     }
     this.refreshPending();
+  }
+
+  // Downscale a texture's backing image in place (base-layer memory trim).
+  // No-op if already small or the image can't be drawn.
+  downscaleTexture(tex, maxSize) {
+    if (!tex || !tex.image) return;
+    const img = tex.image;
+    const w = img.width || img.videoWidth || 0;
+    const h = img.height || img.videoHeight || 0;
+    if (!w || !h || Math.max(w, h) <= maxSize) return;
+    try {
+      const s = maxSize / Math.max(w, h);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w * s));
+      canvas.height = Math.max(1, Math.round(h * s));
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      tex.image = canvas;
+      tex.needsUpdate = true;
+      if (typeof img.close === "function") {
+        try { img.close(); } catch (e) { /* ignore */ }
+      }
+    } catch (e) {
+      /* CORS-tainted or unsupported — leave as-is */
+    }
   }
 
   // Distance from the camera to the frontmost mesh surface at a canvas pixel,
@@ -1718,6 +1756,7 @@ class MeshExplorer {
       this.streamer = new HighResStreamer({
         scene: this.scene,
         camera: this.camera,
+        renderer: this.renderer,
         gltfLoader: this.meshLoader.loaders.gltf,
         nativeSize: this.streamProfile.nativeSize,
         ringSize: this.streamProfile.ringSize,
@@ -1814,7 +1853,13 @@ class MeshExplorer {
     mesh.position.y = 0;
     logTiming("Scaling and positioning");
 
-    // Optimize materials for large meshes
+    // Optimize materials for large meshes. On touch, downscale the ALWAYS-
+    // resident base textures (130 tiles) — at 512² they're ~180 MB, the
+    // single biggest static memory cost and a prime cause of the iOS
+    // tab-kill. 256² cuts that ~4× and detail near the camera still comes
+    // from the high-res streamer.
+    const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    const baseCap = touch ? 256 : 1024;
     let meshCount = 0;
     let materialCount = 0;
     mesh.traverse((child) => {
@@ -1827,6 +1872,7 @@ class MeshExplorer {
         if (child.material) {
           materialCount++;
           child.material.precision = "mediump";
+          this.downscaleTexture(child.material.map, baseCap);
         }
       }
     });

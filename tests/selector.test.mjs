@@ -78,4 +78,24 @@ assert(count(g2) === 8, `second grow completes the wall (got ${count(g2)})`);
 const s1 = selector.shrinkSelection(r1.selected, root);
 assert(count(s1) === 0, `shrink erodes boundary faces (got ${count(s1)})`);
 
+// --- connectedWithin: brush connectivity constraint ---
+// allowed = ground faces (meshA 0-3, meshB 0-1) PLUS the disconnected wall
+// (meshC 0-1). Seeding from a ground face must NOT reach the wall (the wall
+// only shares the x=2 edge with meshB, but connectedWithin bridges any open
+// edge — so include it and confirm the WALL is reachable via the shared edge,
+// then confirm an ISOLATED mesh is not).
+const isolated = makeMesh([50, 0, 50, 51, 0, 50, 51, 0, 51, 50, 0, 51], [0, 2, 1, 0, 3, 2]);
+root.add(isolated);
+root.updateMatrixWorld(true);
+const allowed = new Map([
+  [meshA, new Set([0, 1, 2, 3])],
+  [meshB, new Set([0, 1])],
+  [isolated, new Set([0, 1])],
+]);
+const seeds = new Map([[meshA, new Set([0])]]);
+const conn = selector.connectedWithin(seeds, allowed, root);
+assert((conn.get(meshA)?.size ?? 0) === 4, "connectedWithin reaches all of meshA");
+assert((conn.get(meshB)?.size ?? 0) === 2, "connectedWithin bridges to adjacent meshB");
+assert(!conn.has(isolated), "connectedWithin does NOT reach a spatially isolated mesh (orphan dropped)");
+
 console.log("\nAll selector tests passed.");
