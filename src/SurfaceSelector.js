@@ -1,4 +1,14 @@
 import * as THREE from "three";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+
+// Active-selection accent: a deliberately uncommon violet, distinct from the
+// warm label palette, with a thick opaque outline so a pending selection is
+// unmistakable over noisy photo texture.
+const SEL_FILL = 0xa020ff;
+const SEL_EDGE = 0xd400ff; // electric neon violet
+const SEL_EDGE_PX = 5; // outline thickness in device px
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -407,14 +417,47 @@ export class SurfaceSelector {
     // outline is lifted a hair. Edges dedup by RAW position so seams merge.
     const LIFT = 0.004;
     const edges = new Map();
-    const Q = 0.004;
-    const q = (x) => Math.round(x / Q);
-    const raw = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
     const lift = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-    const addEdge = (ri, rj, li, lj) => {
-      const k1 = `${q(ri[0])},${q(ri[1])},${q(ri[2])}`;
-      const k2 = `${q(rj[0])},${q(rj[1])},${q(rj[2])}`;
-      const key = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+    // Identify each corner by the SAME canonical identity the flood uses so
+    // "interior vs boundary" agrees with the selection topology: a seam vertex
+    // is its 5 mm world-position cell (shared across tiles/UV splits), an
+    // interior vertex is its per-mesh local index. An edge shared by two
+    // selected faces then cancels (count 2) even across a stitched seam, so
+    // only the true outer silhouette + real holes get drawn.
+    // Cancel interior edges even across tile seams whose duplicate vertices
+    // don't perfectly coincide: ODM reconstructs the same ground at slightly
+    // different heights per tile, so cross-tile seam verts sit centimetres
+    // apart. Cluster boundary verts by proximity — an order of magnitude
+    // looser than the flood's bridging quantum — with a neighbour check so a
+    // pair straddling a cell border still merges. Interior verts keep their
+    // per-mesh index (already shared by both faces within a tile).
+    const MERGE_Q = WORLD_POS_QUANTUM * 12; // vs the flood's 5 mm quantum
+    const canon = new Map();
+    let canonN = 0;
+    const canonicalId = (v) => {
+      const cx = Math.round(v.x / MERGE_Q);
+      const cy = Math.round(v.y / MERGE_Q);
+      const cz = Math.round(v.z / MERGE_Q);
+      const self = `${cx},${cy},${cz}`;
+      let rep = canon.get(self);
+      if (rep !== undefined) return rep;
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dz = -1; dz <= 1; dz++) {
+            rep = canon.get(`${cx + dx},${cy + dy},${cz + dz}`);
+            if (rep !== undefined) {
+              canon.set(self, rep);
+              return rep;
+            }
+          }
+      rep = canonN++;
+      canon.set(self, rep);
+      return rep;
+    };
+    const vkey = (mesh, entry, vi) =>
+      entry.boundaryVerts.has(vi) ? `w${canonicalId(tmpV)}` : `${mesh.id}:${vi}`;
+    const addEdge = (ka, kb, li, lj) => {
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
       const e = edges.get(key);
       if (e) e.count++;
       else edges.set(key, { count: 1, a: li.slice(), b: lj.slice() });
@@ -426,18 +469,19 @@ export class SurfaceSelector {
 
       for (const f of faceSet) {
         this.faceWorldNormal(mesh, f, fn);
+        const vk = ["", "", ""];
         for (let i = 0; i < 3; i++) {
-          tmpV.fromBufferAttribute(posAttr, entry.getVertIdx(f, i))
-            .applyMatrix4(mesh.matrixWorld);
-          raw[i][0] = tmpV.x; raw[i][1] = tmpV.y; raw[i][2] = tmpV.z;
+          const vi = entry.getVertIdx(f, i);
+          tmpV.fromBufferAttribute(posAttr, vi).applyMatrix4(mesh.matrixWorld);
           lift[i][0] = tmpV.x + fn.x * LIFT;
           lift[i][1] = tmpV.y + fn.y * LIFT;
           lift[i][2] = tmpV.z + fn.z * LIFT;
-          positions.push(raw[i][0], raw[i][1], raw[i][2]); // fill on surface
+          positions.push(tmpV.x, tmpV.y, tmpV.z); // fill on surface
+          vk[i] = vkey(mesh, entry, vi);
         }
-        addEdge(raw[0], raw[1], lift[0], lift[1]);
-        addEdge(raw[1], raw[2], lift[1], lift[2]);
-        addEdge(raw[2], raw[0], lift[2], lift[0]);
+        addEdge(vk[0], vk[1], lift[0], lift[1]);
+        addEdge(vk[1], vk[2], lift[1], lift[2]);
+        addEdge(vk[2], vk[0], lift[2], lift[0]);
       }
     }
 
@@ -445,9 +489,10 @@ export class SurfaceSelector {
     geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
 
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x18a0ff, // active-selection accent, distinct from warm label colors
+      color: SEL_FILL,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.5,
+      toneMapped: false, // keep the neon violet at full intensity
       side: THREE.DoubleSide,
       // depthWrite TRUE: self-occlude (no near/far-slope band interleaving);
       // polygonOffset below any label overlay so an in-progress selection
@@ -467,15 +512,22 @@ export class SurfaceSelector {
       if (e.count === 1) linePos.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
     }
     if (linePos.length) {
-      const lgeom = new THREE.BufferGeometry();
-      lgeom.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
-      const lmat = new THREE.LineBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.95,
-        depthWrite: false,
+      const lgeom = new LineSegmentsGeometry();
+      lgeom.setPositions(linePos);
+      // Fat lines (screen-space px width). LineBasicMaterial.linewidth is
+      // ignored on almost every GPU, so use LineMaterial for a real thick edge.
+      const lmat = new LineMaterial({
+        color: SEL_EDGE,
+        linewidth: SEL_EDGE_PX,
+        transparent: false,
+        toneMapped: false, // full-intensity neon, unmuted by tone mapping
+        depthWrite: false, // sit over the fill; the lifted verts keep it crisp
       });
-      const line = new THREE.LineSegments(lgeom, lmat);
+      const w = this._resW || (typeof window !== "undefined" ? window.innerWidth : 1);
+      const h = this._resH || (typeof window !== "undefined" ? window.innerHeight : 1);
+      lmat.resolution.set(w, h);
+      this._lineMat = lmat; // kept so a resize can refresh its resolution
+      const line = new LineSegments2(lgeom, lmat);
       line.renderOrder = 1000;
       line.raycast = () => {};
       mesh.add(line);
@@ -493,6 +545,14 @@ export class SurfaceSelector {
     this.highlightMesh.geometry.dispose();
     this.highlightMesh.material.dispose();
     this.highlightMesh = null;
+    this._lineMat = null;
+  }
+
+  // Fat-line outlines need the viewport size in px; refresh it on resize.
+  setLineResolution(w, h) {
+    this._resW = w;
+    this._resH = h;
+    if (this._lineMat) this._lineMat.resolution.set(w, h);
   }
 
   // Flood from a seed face along edge adjacency (incl. cross-tile / UV-seam

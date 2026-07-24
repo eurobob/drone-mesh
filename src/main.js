@@ -59,7 +59,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "brush-occlusion-1";
+const BUILD_VERSION = "review-fixes-1";
 
 class MeshExplorer {
   constructor() {
@@ -280,6 +280,7 @@ class MeshExplorer {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      if (this.selector) this.selector.setLineResolution(window.innerWidth, window.innerHeight);
     });
 
     // Kill iOS OS-level zoom that the viewport meta alone doesn't stop:
@@ -567,10 +568,14 @@ class MeshExplorer {
   // Clean state = verbs (Confirm/Flag/Skip); any change = Save/Discard.
   armReviewItem(item) {
     this.quietDisarm();
+    const adjustBtn = document.getElementById("ra-adjust");
     if (!item) {
       this.reviewAdjust = false; // queue complete
+      this.setReviewAdjusting(false);
+      if (adjustBtn) adjustBtn.style.display = "none";
       return;
     }
+    if (adjustBtn) adjustBtn.style.display = "";
     this.reviewAdjust = true;
     this.editingLabelId = item.label.id;
     this.labels.setOverlayVisible(item.label.id, false); // live highlight replaces it
@@ -585,7 +590,20 @@ class MeshExplorer {
     this.pickConfidence(item.label.confidence);
     this.selector.showFaces(this.pending.selected);
     this.updateReviewSheet();
-    this.showDock(true);
+    this.setReviewAdjusting(false); // each item starts as clean triage
+  }
+
+  // Toggle the editing sub-mode: reveals the shared tool bar + focus cluster
+  // (floated above the review card) so a boundary can be tidied. Off by
+  // default so a straight Confirm/Skip pass stays uncluttered.
+  setReviewAdjusting(on) {
+    this.reviewAdjusting = on;
+    document.body.classList.toggle("adjusting", on);
+    const btn = document.getElementById("ra-adjust");
+    if (btn) btn.classList.toggle("active", on);
+    this.showToolbar(on);
+    this.showDock(on);
+    if (!on) this.setTool("navigate"); // leaving adjust returns to orbit-only
   }
 
   quietDisarm() {
@@ -594,9 +612,10 @@ class MeshExplorer {
       this.controls.orbitTarget = null;
       this.controls.syncFromCamera();
     }
-    if (this.editingLabelId && this.labels) {
-      this.labels.setOverlayVisible(this.editingLabelId, true);
-    }
+    // Don't force the previous item's overlay back on — ReviewMode.show() has
+    // already set overlay visibility for the new item (only the current one),
+    // and re-showing here leaves the just-skipped item highlighted in its tag
+    // colour. Review's setOverlaysVisible / exit restore is the authority.
     this.editingLabelId = null;
     this.pending = null;
     this.pendingHistory = [];
@@ -718,9 +737,11 @@ class MeshExplorer {
     }
     const mode = s.focusTiles
       ? "FOCUS(review)"
-      : s.spatialTiling
-        ? "gaze"
-        : "defer(atlas)";
+      : s.reviewOrbit
+        ? "review(orbit-pick)"
+        : s.spatialTiling
+          ? "gaze"
+          : "defer(atlas)";
     const ema = this._frameEMA == null ? 0 : this._frameEMA;
     const worst = this._frameWorst || 0;
     el.textContent =
@@ -865,16 +886,17 @@ class MeshExplorer {
         labels: this.labels,
         streamer: this.streamer,
         ui: {
-          hud: document.getElementById("review-actions"), // one sheet now
+          // one compact card; the shared tool bar is revealed only on Adjust.
+          hud: document.getElementById("review-actions"),
           progress: document.getElementById("rh-progress"),
           klass: document.getElementById("rh-class"),
           classHero: document.getElementById("ra-class"),
           meta: document.getElementById("rh-meta"),
-          exit: document.getElementById("rh-exit"),
+          exit: null, // no ✕ on the card; Explore/Review toggle exits
           actions: document.getElementById("review-actions"),
           reclass: document.getElementById("ra-reclass"),
-          verbs: document.getElementById("ra-verbs"),
-          tools: document.getElementById("ra-tools"),
+          verbs: document.getElementById("ra-verbs"), // verb row, hidden on complete
+          tools: null, // tool bar is the shared #toolbar, revealed via Adjust
           correct: document.getElementById("ra-correct"),
           wrong: document.getElementById("ra-class"), // the class chip toggles the picker
           flag: document.getElementById("ra-flag"),
@@ -892,6 +914,7 @@ class MeshExplorer {
     this.review.streamer = this.streamer;
 
     this.mode = "review";
+    document.body.classList.add("review-mode"); // raises the tool bar above the verbs
     this.controls.enabled = false;
     this.orbit.enabled = true;
     this.setTool("navigate"); // orbit to inspect; pick a tool to adjust
@@ -903,7 +926,7 @@ class MeshExplorer {
 
     this.ui.card.classList.remove("active");
     document.getElementById("info").classList.remove("active");
-    this.showToolbar(true);
+    this.showToolbar(false); // tools stay hidden until Adjust
     this.syncModeToggle();
 
     if (!this.review.enter()) this.handleReviewExit();
@@ -912,7 +935,9 @@ class MeshExplorer {
   handleReviewExit() {
     this.quietDisarm();
     this.reviewAdjust = false;
+    this.reviewAdjusting = false;
     this.mode = "explore";
+    document.body.classList.remove("review-mode", "adjusting");
     if (this.orbit) this.orbit.enabled = false;
     this.controls.enabled = true;
     this.controls.syncFromCamera();
@@ -1210,7 +1235,10 @@ class MeshExplorer {
     const bar = document.getElementById("toolbar");
     if (bar) bar.classList.toggle("editing", on);
     const fg = document.getElementById("focus-group");
-    if (fg) fg.classList.toggle("visible", on);
+    if (fg) {
+      fg.classList.toggle("visible", on);
+      if (!on) fg.classList.remove("open");
+    }
     const card = document.getElementById("labels-card");
     if (card) {
       if (on) card.classList.remove("active");
@@ -1252,12 +1280,24 @@ class MeshExplorer {
     document.getElementById("tb-grow").addEventListener("click", () => this.growPending());
     document.getElementById("tb-shrink").addEventListener("click", () => this.shrinkPending());
 
-    // top-left: focus-view cluster + info popover
+    // top-left: focus-view cluster (single icon → expandable menu) + info
+    const focusGroup = document.getElementById("focus-group");
+    document.getElementById("focus-toggle").addEventListener("click", () =>
+      focusGroup.classList.toggle("open")
+    );
     document.querySelectorAll("#focus-group [data-view3d]").forEach((b) =>
-      b.addEventListener("click", () => this.focusSelection(b.dataset.view3d))
+      b.addEventListener("click", () => {
+        this.focusSelection(b.dataset.view3d);
+        focusGroup.classList.remove("open"); // collapse after picking an angle
+      })
     );
     document.getElementById("btn-info").addEventListener("click", () =>
       document.getElementById("info").classList.toggle("active")
+    );
+
+    // review: reveal/hide the editing tools for the current item
+    document.getElementById("ra-adjust").addEventListener("click", () =>
+      this.setReviewAdjusting(!this.reviewAdjusting)
     );
 
     // top-center: Explore / Review
@@ -1715,16 +1755,6 @@ class MeshExplorer {
     }
   }
 
-  showProgressiveLoader() {
-    const loader = document.getElementById("progressive-loader");
-    loader.classList.add("active");
-  }
-
-  hideProgressiveLoader() {
-    const loader = document.getElementById("progressive-loader");
-    loader.classList.remove("active");
-  }
-
   // Pick mesh sources (local copies auto-detected, else CDN) and dispatch to
   // the requested mode. No ?local needed on dev machines with the files.
   async startLoading(params) {
@@ -1826,7 +1856,6 @@ class MeshExplorer {
       // once and stripped of its textures so nothing is decoded up front; only
       // the nearest tiles ever decode/upload a texture. This is what keeps memory
       // bounded on tablets/phones (see HighResStreamer).
-      this.showProgressiveLoader();
       this.isLoadingHighRes = true;
 
       console.log("Starting high-res streaming...");
@@ -1853,34 +1882,12 @@ class MeshExplorer {
         if (this.review.active && item) this.review.applyFocus(item);
       }
 
-      // Keep the pill up — with a live counter — until every wanted texture
-      // is actually resident. The warmup window is where upload work happens
-      // (and where frames may dip); labeling it stops it reading as "the app
-      // is just slow".
-      const pillText = document.querySelector("#progressive-loader span");
-      const warmupWatch = setInterval(() => {
-        const s = this.streamer;
-        if (!s || !s.tiles.length) return;
-        const resident = s.tiles.filter((t) => t.state === "high").length;
-        const wanted = s.tiles.filter((t) => t.wanted).length;
-        if (pillText) {
-          pillText.textContent = `Enhancing quality… ${resident}/${wanted || "?"}`;
-        }
-        const done =
-          s.uploadQueue.length === 0 &&
-          s.decoding === 0 &&
-          s.tiles.every((t) => !t.wanted || t.state === "high");
-        if (done) {
-          clearInterval(warmupWatch);
-          this.hideProgressiveLoader();
-          if (pillText) pillText.textContent = "Enhancing quality...";
-          console.log(`[streamer] warmup complete: ${resident} textures resident`);
-        }
-      }, 250);
+      // Textures now stream continuously by proximity/frustum (see the animate
+      // loop + HighResStreamer). The opening view sharpens the same silent way a
+      // fly-through does — no separate warmup indicator.
       this.isLoadingHighRes = false;
     } catch (error) {
       this.hideLoading();
-      this.hideProgressiveLoader();
       console.error("Error loading progressive mesh:", error);
       alert(`Failed to load mesh: ${error.message}`);
     }

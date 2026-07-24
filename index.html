@@ -80,33 +80,6 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     #loading-text { color: white; margin-top: 20px; font-size: 18px; }
     #loading-progress { color: #3498db; margin-top: 10px; font-size: 14px; }
-    #progressive-loader {
-      position: absolute;
-      top: 12px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.6);
-      padding: 8px 16px;
-      border-radius: 20px;
-      display: none;
-      align-items: center;
-      gap: 10px;
-      z-index: 900;
-    }
-    #progressive-loader.active { display: flex; }
-    .pulse-dot {
-      width: 8px; height: 8px;
-      background: #3498db;
-      border-radius: 50%;
-      animation: pulse 1.5s ease-in-out infinite;
-    }
-    .pulse-dot:nth-child(2) { animation-delay: 0.2s; }
-    .pulse-dot:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes pulse {
-      0%, 100% { opacity: 0.3; transform: scale(0.8); }
-      50% { opacity: 1; transform: scale(1.2); }
-    }
-
     /* ============ product surfaces: white instrument ============ */
     .sheet {
       display: none;
@@ -124,6 +97,70 @@
       box-sizing: border-box;
     }
     .sheet.active { display: block; }
+
+    /* --- review: one compact card; tools hidden until you tap Adjust --- */
+    body.review-mode #review-actions {
+      bottom: calc(14px + env(safe-area-inset-bottom));
+      width: min(96vw, 600px);
+      padding: 10px 14px calc(12px);
+      z-index: 846; /* above the tool bar (840) */
+    }
+    .rv-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 30px;
+    }
+    .rv-progress, .rv-meta {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      white-space: nowrap;
+    }
+    .rv-adjust {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .rv-adjust.active { background: var(--ink); border-color: var(--ink); color: #fff; }
+    /* the class chip is the reclass control (dark = primary) */
+    .class-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      background: var(--ink);
+      border: none;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+    }
+    .class-chip.full { width: 100%; margin: 10px 0; }
+    #rh-class { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip-dot { width: 13px; height: 13px; border-radius: 50%; background: var(--cls, #fff); flex: none; }
+    .chip-chev {
+      margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: rgba(255, 255, 255, 0.7);
+    }
+    /* the shared tool bar is hidden in review, revealed only while adjusting */
+    body.review-mode #toolbar { display: none; }
+    body.review-mode.adjusting #toolbar.visible {
+      display: flex;
+      bottom: calc(210px + env(safe-area-inset-bottom));
+    }
+    /* Changing class and adjusting geometry are different intents: while the
+       class picker is open the tool bar would grow into it, so hide it. */
+    body.review-mode:has(#ra-reclass.active) #toolbar.visible { display: none !important; }
 
     /* compact commit cluster, bottom-right (out of the way of the selection) */
     #label-panel {
@@ -194,20 +231,12 @@
     }
     .class-pop.open { display: grid; }
 
-    .sheet-utility {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-soft);
-      min-height: 32px;
-    }
     .lp-spacer { flex: 1; }
     .icon-quiet {
       width: 34px; height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       border: 1px solid var(--line);
       background: var(--surface);
       color: var(--ink-soft);
@@ -216,40 +245,12 @@
       cursor: pointer;
       flex: none;
     }
+    .icon-quiet svg {
+      width: 17px; height: 17px;
+      fill: none; stroke: currentColor; stroke-width: 2;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
     .icon-quiet.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
-
-    /* the signature: the class IS the control */
-    .class-hero {
-      width: 100%;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-bottom: 3px solid var(--cls, var(--line));
-      border-radius: var(--radius-s);
-      padding: 12px 16px;
-      margin: 8px 0 10px;
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--ink);
-      cursor: pointer;
-      text-align: left;
-    }
-    .hero-dot {
-      width: 16px; height: 16px;
-      border-radius: 50%;
-      background: var(--cls, var(--line));
-      flex: none;
-    }
-    .hero-chev {
-      margin-left: auto;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-soft);
-    }
 
     .option-grid {
       display: none;
@@ -423,8 +424,13 @@
       gap: 8px;
       align-items: flex-start;
     }
-    #focus-group {
+    #focus-group { display: none; position: relative; }
+    #focus-group.visible { display: block; }
+    #focus-menu {
       display: none;
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
       flex-direction: column;
       gap: 4px;
       background: var(--surface);
@@ -432,7 +438,8 @@
       box-shadow: var(--shadow);
       padding: 6px;
     }
-    #focus-group.visible { display: flex; }
+    #focus-group.open #focus-menu { display: flex; }
+    #focus-toggle { font-size: 18px; }
     .fg-label {
       font-size: 9px;
       font-weight: 700;
@@ -652,7 +659,6 @@
     @media (max-width: 640px) {
       #info { font-size: 10px; padding: 6px 8px; max-width: 44vw; opacity: 0.85; }
       #labels-card { width: auto; max-width: 58vw; font-size: 12px; }
-      .class-hero { font-size: 18px; padding: 10px 12px; }
       .btn-primary { padding: 12px 14px; }
       .btn-quiet { padding: 12px 10px; font-size: 13px; }
       #toolbar { padding: 4px; gap: 0; }
@@ -676,11 +682,14 @@
   <div id="corner-tl">
     <button id="btn-info" class="round-btn" title="Controls">i</button>
     <div id="focus-group" title="Frame the selection">
-      <span class="fg-label">Focus</span>
-      <button class="focus-btn" data-view3d="top">Top</button>
-      <button class="focus-btn" data-view3d="front">Front</button>
-      <button class="focus-btn" data-view3d="side">Side</button>
-      <button class="focus-btn" data-view3d="reset">¾</button>
+      <button id="focus-toggle" class="round-btn" title="Frame the selection">⛶</button>
+      <div id="focus-menu">
+        <span class="fg-label">Focus</span>
+        <button class="focus-btn" data-view3d="top">Top</button>
+        <button class="focus-btn" data-view3d="front">Front</button>
+        <button class="focus-btn" data-view3d="side">Side</button>
+        <button class="focus-btn" data-view3d="reset">¾</button>
+      </div>
     </div>
   </div>
 
@@ -695,12 +704,6 @@
     <div id="loading-text">Loading mesh...</div>
     <div id="loading-progress"></div>
   </div>
-  <div id="progressive-loader">
-    <div class="pulse-dot"></div>
-    <div class="pulse-dot"></div>
-    <div class="pulse-dot"></div>
-    <span style="color: white; font-size: 12px; margin-left: 5px;">Enhancing quality...</span>
-  </div>
 
   <!-- explore: create a label -->
   <div id="label-panel" class="sheet">
@@ -709,7 +712,9 @@
     <div class="action-row">
       <div id="lp-conf" class="conf-row"></div>
       <span class="lp-spacer"></span>
-      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
+      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg>
+      </button>
       <button id="lp-cancel" class="btn-quiet">Cancel</button>
       <button id="lp-save" class="btn-primary">Save label</button>
     </div>
@@ -767,7 +772,9 @@
     <div id="lp-classgrid" class="class-pop"></div>
     <div class="commit-bar">
       <button id="lp-cancel" class="icon-quiet" title="Cancel">✕</button>
-      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
+      <button id="lp-delete" class="icon-quiet danger" style="display:none" title="Delete this label">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg>
+      </button>
       <button id="lp-class" class="commit-class">
         <span class="dot" id="lp-class-dot"></span>
         <span id="lp-class-name">—</span>
@@ -782,19 +789,22 @@
     </div>
   </div>
 
-  <!-- review card -->
+  <!-- review: one compact card. The editing tools stay hidden until you tap
+       Adjust, so a straight Confirm/Skip pass keeps the screen clear. -->
   <div id="review-actions" class="sheet">
-    <div class="sheet-utility">
-      <span id="rh-progress"></span>
-      <span id="rh-meta"></span>
+    <div class="rv-head">
+      <span id="rh-progress" class="rv-progress"></span>
+      <span id="rh-meta" class="rv-meta"></span>
       <span class="lp-spacer"></span>
-      <button id="ra-delete" class="icon-quiet danger" style="display:none" title="Delete this label">🗑</button>
-      <button id="rh-exit" class="icon-quiet" title="Exit review">✕</button>
+      <button id="ra-adjust" class="rv-adjust" title="Adjust this selection">✎ Adjust</button>
+      <button id="ra-delete" class="icon-quiet danger" style="display:none" title="Delete this label">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg>
+      </button>
     </div>
-    <button id="ra-class" class="class-hero" title="Change what this surface is">
-      <span class="hero-dot" id="ra-class-dot"></span>
+    <button id="ra-class" class="class-chip full" title="Change what this surface is">
+      <span class="chip-dot" id="ra-class-dot"></span>
       <span id="rh-class"></span>
-      <span class="hero-chev">change</span>
+      <span class="chip-chev">change</span>
     </button>
     <div id="ra-reclass" class="option-grid"></div>
     <div class="action-row" id="ra-verbs">

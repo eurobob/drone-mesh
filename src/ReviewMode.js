@@ -43,7 +43,8 @@ export class ReviewMode {
 
   bindUI() {
     if (!this.ui) return; // headless tests
-    this.ui.exit.addEventListener("click", () => this.exit());
+    // Exit is reached via the top Explore/Review toggle; the card has no ✕.
+    if (this.ui.exit) this.ui.exit.addEventListener("click", () => this.exit());
     this.ui.correct.addEventListener("click", () => {
       if (this.onCorrect && this.onCorrect()) return;
       this.correct();
@@ -89,7 +90,7 @@ export class ReviewMode {
     this.active = false;
     const cur = this.queue[this.index];
     if (cur) this.labels.emphasize(cur.label.id, false);
-    if (this.streamer) this.streamer.setFocus(null, null); // back to camera proximity
+    if (this.streamer) this.streamer.setReviewOrbit(false); // back to explore proximity
     this.labels.setOverlaysVisible(() => true);
     this.tween = null;
     if (this.ui) {
@@ -186,15 +187,12 @@ export class ReviewMode {
     this.onItemShown(item);
   }
 
-  // Streaming focus: high-res textures for the item's own tiles, prefetch for
-  // the next item's. Everything else renders at the (fully resident) base LOD.
-  applyFocus(item) {
+  // Streaming: enhance whatever is framed on screen (pick-driven, same as
+  // explore) rather than pinning only the item's own atlas pages — so the
+  // item AND its surrounding context sharpen, not just the label's tiles.
+  applyFocus() {
     if (!this.streamer) return; // base mesh alone until the high-res GLB lands
-    const next = this.queue[this.index + 1];
-    this.streamer.setFocus(
-      this.itemTileSet(item),
-      next ? this.itemTileSet(next) : null
-    );
+    this.streamer.setReviewOrbit(true);
   }
 
   frame(item) {
@@ -287,9 +285,11 @@ export class ReviewMode {
     this.onItemShown(null);
     if (this.ui) {
       const s = this.stats;
+      // The class chip hides on completion, so the summary lives in the
+      // always-visible progress + meta fields (compact glyphs to fit the pill).
       this.ui.progress.textContent = "Done";
-      this.ui.klass.textContent = `✓ ${s.confirmed} confirmed`;
-      this.ui.meta.textContent = `${s.reclassed} reclassified · ${s.flagged} flagged · ${s.skipped} skipped`;
+      this.ui.klass.textContent = "";
+      this.ui.meta.textContent = `✓ ${s.confirmed}  ⟳ ${s.reclassed}  ⚑ ${s.flagged}  → ${s.skipped}`;
       this.setActionsVisible(false);
     }
   }

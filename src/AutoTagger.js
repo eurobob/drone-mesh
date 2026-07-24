@@ -85,13 +85,25 @@ export async function autoTag({
         continue;
       }
 
+      // Claim only faces no earlier region took. select()'s per-seed normal
+      // cone means two seeds can flood overlapping regions; without this the
+      // labels would share triangles. First region to reach a face owns it.
+      const claimed = new Map();
       let faceCount = 0;
       let area = 0;
       for (const [m, faces] of result.selected) {
         const va = visited.get(m);
-        if (va) for (const ff of faces) va[ff] = 1;
-        faceCount += faces.size;
-        area += worldArea(m, faces);
+        const fresh = new Set();
+        for (const ff of faces) {
+          if (va && va[ff]) continue; // already owned by an earlier region
+          fresh.add(ff);
+          if (va) va[ff] = 1;
+        }
+        if (fresh.size) {
+          claimed.set(m, fresh);
+          faceCount += fresh.size;
+          area += worldArea(m, fresh);
+        }
       }
       regions++;
 
@@ -99,15 +111,15 @@ export async function autoTag({
 
       let classId = labels.suggestFor({
         targetClass: result.targetClass,
-        selected: result.selected,
+        selected: claimed,
       });
       // Geometric priors can't tell a palm canopy from a roof — colour can.
-      if (classId !== "building-wall" && isGreenish(regionMeanColor(selector, result.selected))) {
+      if (classId !== "building-wall" && isGreenish(regionMeanColor(selector, claimed))) {
         classId = "vegetation";
       }
 
       labels.add({
-        selected: result.selected,
+        selected: claimed,
         classId,
         confidence: "flagged", // red: machine proposal awaiting human review
         suggested: classId,

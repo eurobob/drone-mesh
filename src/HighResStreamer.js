@@ -141,6 +141,11 @@ export class HighResStreamer {
     this.focusTiles = null;
     this.prefetchTiles = null;
     this.scope = null;
+    // Review orbit: enhance what's framed on screen exactly like explore
+    // (pick-driven), but reveal promoted clusters by frustum alone — the
+    // orbit distance to a framed item often exceeds explore's reveal radius,
+    // and off-screen fragments stay hidden by the frustum test regardless.
+    this.reviewOrbit = false;
   }
 
   // Fetch + strip + load geometry, overlay it on the low-res base. Resolves once
@@ -445,6 +450,10 @@ export class HighResStreamer {
         if (promoted) {
           if (focusMode) {
             on = true;
+          } else if (this.reviewOrbit) {
+            // frustum-only: distance-independent so a framed item reveals at
+            // any orbit range; off-screen fragments stay hidden.
+            on = this._frustum.containsPoint(c.centroid);
           } else {
             const base = CLUSTER_ON_DIST * this.rangeScale;
             const limit = c.on ? base * 1.25 : base;
@@ -548,8 +557,10 @@ export class HighResStreamer {
   // pick pass is unavailable.
   computeTargetsFromIndex() {
     // Skip the pick (a GPU readback stall) during fast fly-through — we're not
-    // uploading anyway; targets refresh the moment the camera settles.
-    if (this.motionHold) return;
+    // uploading anyway; targets refresh the moment the camera settles. Review
+    // orbit is exempt: it's not a fly-through, and the inter-item tween must
+    // not suppress the pick or items arrive stuck at low-res.
+    if (this.motionHold && !this.reviewOrbit) return;
     const counts = this.pickVisibleTiles();
     if (!counts) return this.computeTargetsByDistance();
 
@@ -747,9 +758,9 @@ export class HighResStreamer {
     // Targets + demotion + reveal always run (cheap, keep memory bounded and
     // the view correct). Only the EXPENSIVE work — decode + upload — is gated
     // on motion, so a fly-through never pays texture cost mid-flight. The gate
-    // is IGNORED in review focus mode: the queue pins a tiny explicit tile set
-    // and the inter-item camera tween must not suppress its prefetch.
-    if (!this.motionHold || this.focusTiles) {
+    // is IGNORED in review (focus or orbit): review is not a fly-through and
+    // the inter-item camera tween must not suppress its streaming.
+    if (!this.motionHold || this.focusTiles || this.reviewOrbit) {
       // Upgrades wanted, most-visible first — the 3-wide decode queue fills
       // with what the user is looking at. Resident tiles above their target
       // (native drifting into the ring) are left alone: no downgrade churn;
@@ -773,6 +784,18 @@ export class HighResStreamer {
   setFocus(focusIndices, prefetchIndices = null) {
     this.focusTiles = focusIndices ? Array.from(focusIndices) : null;
     this.prefetchTiles = prefetchIndices ? Array.from(prefetchIndices) : null;
+    this.update();
+  }
+
+  // Review orbit streaming: pick-driven targeting (same as explore) with
+  // frustum-only cluster reveal so the framed item and its surroundings all
+  // sharpen regardless of orbit distance.
+  setReviewOrbit(on) {
+    this.reviewOrbit = !!on;
+    if (on) {
+      this.focusTiles = null;
+      this.prefetchTiles = null;
+    }
     this.update();
   }
 
@@ -830,7 +853,7 @@ export class HighResStreamer {
   // entirely while the camera is moving fast (motion gate) — texture uploads
   // are the single most expensive main-thread op and must never land mid-fly.
   drainUploads() {
-    if (this.motionHold && !this.focusTiles) return;
+    if (this.motionHold && !this.focusTiles && !this.reviewOrbit) return;
     while (this.uploadQueue.length) {
       const { t, image, size } = this.uploadQueue.shift();
       t.decoding = false;

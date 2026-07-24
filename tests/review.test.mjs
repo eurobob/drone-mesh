@@ -1,5 +1,6 @@
-// Review mode: full base mesh stays visible, texture focus on the current
-// item, prefetch on the next, queue ordering + verbs, storage roundtrip.
+// Review mode: full base mesh stays visible, textures stream by on-screen
+// pick (orbit mode, same as explore) rather than pinning the item's own atlas
+// pages, queue ordering + verbs, storage roundtrip.
 import * as THREE from "three";
 
 const store = new Map();
@@ -100,20 +101,15 @@ const review = new ReviewMode({
 assert(review.enter() === true, "enter() succeeds");
 assert(review.queue[0].label.class === "building-roof", "NN ordering: near item first");
 assert(
-  JSON.stringify(streamer.focusTiles) === "[0]" &&
-    JSON.stringify(streamer.prefetchTiles) === "[1]",
-  "focus/prefetch point at current/next item tiles"
+  streamer.reviewOrbit === true && streamer.focusTiles === null,
+  "review streams by on-screen pick (orbit), not page-pinned focus"
 );
 for (const t of streamer.tiles) {
   assert(t.mesh.visible !== t.low.visible, `tile ${t.index} visible at exactly one LOD`);
 }
-assert(streamer.tiles[1].state === "high", "next item's texture prefetched");
 
 review.correct();
-assert(
-  JSON.stringify(streamer.focusTiles) === "[1]" && streamer.prefetchTiles === null,
-  "advance moves focus to next item"
-);
+assert(streamer.reviewOrbit === true, "advancing keeps review orbit streaming active");
 assert(
   labels.list.find((l) => l.class === "building-roof").confidence === "confirmed",
   "Correct persists confirmed"
@@ -124,7 +120,7 @@ assert(review.index === review.queue.length, "queue complete");
 assert(review.stats.confirmed === 1 && review.stats.reclassed === 1, "stats tallied");
 
 review.exit();
-assert(streamer.focusTiles === null, "exit returns streamer to gaze mode");
+assert(streamer.reviewOrbit === false, "exit returns streamer to explore proximity");
 
 // no-streamer fallback (reset visibility first — streamer scenario above
 // legitimately hid low meshes behind their promoted fakes)
