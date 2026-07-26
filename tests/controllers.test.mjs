@@ -15,10 +15,10 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
     "commit panel opens on a fresh selection"
   );
 
-  app.pickClass("building-roof");
-  app.pickConfidence("confirmed");
-  assert(app.pickedClass === "building-roof", "pickClass records the chosen class");
-  app.saveLabel();
+  app.labelingCtl.pickClass("building-roof");
+  app.labelingCtl.pickConfidence("confirmed");
+  assert(app.labelingCtl.pickedClass === "building-roof", "pickClass records the chosen class");
+  app.labelingCtl.saveLabel();
 
   assert(labels.list.length === 1, "saveLabel persists one label");
   assert(labels.list[0].class === "building-roof", "saved label carries the picked class");
@@ -96,7 +96,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
 
   // dirty edit → Confirm saves the reclass instead of running the plain verb
   app.reviewCtl.pendingDirty = true;
-  app.pickClass("ground");
+  app.labelingCtl.pickClass("ground");
   const handled = app.reviewCtl.handleReviewConfirm();
   assert(handled === true, "dirty Confirm is handled as a save");
   assert(labels.list[0].class === "ground", "the reclass was saved to the label");
@@ -113,13 +113,13 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
     targetClass: "roof-flat",
   });
 
-  app.enterEditLabel(label);
+  app.labelingCtl.enterEditLabel(label);
   assert(app.editingLabelId === label.id, "enterEditLabel targets the tapped label");
   assert(app.pending && app.pending.faceCount === 2, "editing loads the label's faces as pending");
-  assert(app.pickedClass === "ground", "editing preselects the label's own class");
+  assert(app.labelingCtl.pickedClass === "ground", "editing preselects the label's own class");
 
-  app.pickClass("building-roof");
-  app.saveLabel();
+  app.labelingCtl.pickClass("building-roof");
+  app.labelingCtl.saveLabel();
   assert(labels.list.length === 1, "editing updates in place — no duplicate label");
   assert(labels.list[0].class === "building-roof", "the edit saved the new class");
   assert(app.editingLabelId === null, "edit state clears after save");
@@ -162,10 +162,10 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
     suggested: "ground",
     targetClass: "roof-flat",
   });
-  app.renderLabelList();
+  app.labelingCtl.renderLabelList();
 
   document.querySelector('#view-modes [data-view="all"]').click();
-  assert(app.viewMode === "all", "clicking a view mode updates the active view");
+  assert(app.labelingCtl.viewMode === "all", "clicking a view mode updates the active view");
 }
 
 // --- review: skipping through the queue completes and disarms --------------

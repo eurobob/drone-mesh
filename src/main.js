@@ -7,7 +7,7 @@ import { hudMixin } from "./app/hud.js";
 import { loadingMixin } from "./app/loading.js";
 import { ChromeController } from "./app/ChromeController.js";
 import { ReviewController } from "./app/ReviewController.js";
-import { labelingMixin } from "./app/labeling.js";
+import { LabelingController } from "./app/LabelingController.js";
 import { selectionMixin } from "./app/selection.js";
 
 // The high-res model is 130 tiles, each with its own ~2048x2048 texture. Decoded
@@ -106,6 +106,7 @@ class MeshExplorer {
     // for shared state). reviewCtl coordinates the ReviewMode engine (this.review).
     this.chrome = new ChromeController(this);
     this.reviewCtl = new ReviewController(this);
+    this.labelingCtl = new LabelingController(this);
 
     this.init();
     this.setupEventListeners();
@@ -341,7 +342,7 @@ class MeshExplorer {
     } finally {
       this.hideLoading();
       this.autoTagging = false;
-      this.renderLabelList();
+      this.labelingCtl.renderLabelList();
     }
   }
 
@@ -466,7 +467,6 @@ Object.assign(
   MeshExplorer.prototype,
   hudMixin,
   loadingMixin,
-  labelingMixin,
   selectionMixin,
 );
 

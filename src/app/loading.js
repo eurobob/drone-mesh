@@ -233,7 +233,7 @@ export const loadingMixin = {
       });
       this.labels.restore();
       this.chrome.showToolbar(true);
-      this.renderLabelList();
+      this.labelingCtl.renderLabelList();
     } catch (err) {
       this.hideLoading();
       console.error("raw load failed", err);
@@ -270,7 +270,7 @@ export const loadingMixin = {
       const restored = this.labels.restore();
       if (restored) console.log(`Restored ${restored} saved labels`);
       this.chrome.showToolbar(true);
-      this.renderLabelList();
+      this.labelingCtl.renderLabelList();
 
       // NO automatic pre-warm: the adjacency build (incl. one long synchronous
       // global-graph merge) was stealing frames right after load, while users

@@ -10,7 +10,7 @@ import * as THREE from "three";
 import { SurfaceSelector } from "../src/SurfaceSelector.js";
 import { LabelManager } from "../src/Labels.js";
 import { ChromeController } from "../src/app/ChromeController.js";
-import { labelingMixin } from "../src/app/labeling.js";
+import { LabelingController } from "../src/app/LabelingController.js";
 import { selectionMixin } from "../src/app/selection.js";
 import { ReviewController } from "../src/app/ReviewController.js";
 
@@ -109,10 +109,7 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       streamer: null,
       debugLOD: false,
       debugViz: false,
-      viewMode: "hidden",
-      isolatedClass: null,
     },
-    labelingMixin,
     selectionMixin,
   );
 
@@ -121,9 +118,10 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
   app.chrome = new ChromeController(app);
   app.chrome.editTool = editTool;
   app.reviewCtl = new ReviewController(app);
+  app.labelingCtl = new LabelingController(app);
 
   // Real UI wiring (creates app.ui + app.paint via PaintTools, binds the bar).
-  app.initLabelUI();
+  app.labelingCtl.initLabelUI();
   return { app, root, mesh, scene, selector, labels };
 }
 

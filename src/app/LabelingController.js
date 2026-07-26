@@ -1,34 +1,45 @@
 import { LABEL_CLASSES, CONFIDENCE_LEVELS } from "../Labels.js";
 import { PaintTools } from "../PaintTools.js";
 
-// Labeling UI: the commit sheet (class picker + confidence), the paint-tool
-// wiring, the utilities menu (export / auto-tag / clear), the view-filter
-// switcher, click-to-edit of an existing label, save, and the status-card
-// list/coverage. Mixed onto MeshExplorer.prototype (`this` is the app).
-export const labelingMixin = {
+// Labeling coordinator. OWNS the commit-sheet UI refs + current picks (ui,
+// pickedClass, pickedConfidence) and the view-filter state (viewMode,
+// isolatedClass). Reaches the app for shared state (pending, labels, selector)
+// and sibling controllers. `this` is the controller, `this.app` the MeshExplorer.
+export class LabelingController {
+  constructor(app) {
+    this.app = app;
+    this.ui = null;
+    this.pickedClass = null;
+    this.pickedConfidence = "confirmed";
+    this.viewMode = "hidden";
+    this.isolatedClass = null;
+  }
+
   enterEditLabel(label) {
-    this.editingLabelId = label.id;
-    this.labels.setOverlayVisible(label.id, false); // pending highlight replaces it
-    this.pendingHistory = [];
-    this.pending = {
-      selected: this.labels.decodeSelection(label),
+    const app = this.app;
+    app.editingLabelId = label.id;
+    app.labels.setOverlayVisible(label.id, false); // pending highlight replaces it
+    app.pendingHistory = [];
+    app.pending = {
+      selected: app.labels.decodeSelection(label),
       targetClass: label.geomClass || "roof-flat",
       clicks: 1,
     };
-    this.refreshPending();
+    app.refreshPending();
     // panel opens via refreshPending; preselect the label's own values
     this.pickClass(label.class);
     this.pickConfidence(label.confidence);
-  },
+  }
 
   exitEditState() {
-    if (this.editingLabelId && this.labels) {
-      this.labels.setOverlayVisible(this.editingLabelId, true);
+    if (this.app.editingLabelId && this.app.labels) {
+      this.app.labels.setOverlayVisible(this.app.editingLabelId, true);
     }
-    this.editingLabelId = null;
-  },
+    this.app.editingLabelId = null;
+  }
 
   initLabelUI() {
+    const app = this.app;
     this.ui = {
       panel: document.getElementById("label-panel"),
       summary: document.getElementById("lp-summary"),
@@ -76,57 +87,57 @@ export const labelingMixin = {
 
     // Paint tools: lasso (mouse) / brush (touch), add OR remove per intent.
     // Reads candidates live and applies hits through applyPaint.
-    this.paint = new PaintTools({
-      domElement: this.renderer.domElement,
+    app.paint = new PaintTools({
+      domElement: app.renderer.domElement,
       container: document.getElementById("canvas-container"),
-      camera: this.camera,
-      getCandidates: (intent) => this.paintCandidates(intent),
-      onGestureStart: () => this.pushPendingHistory(),
-      onApply: (intent, map) => this.applyPaint(intent, map),
-      onBrush: (px, py, radius) => this.onBrush(px, py, radius),
-      pickDepth: (px, py) => this.pickSurfaceDepth(px, py),
+      camera: app.camera,
+      getCandidates: (intent) => app.paintCandidates(intent),
+      onGestureStart: () => app.pushPendingHistory(),
+      onApply: (intent, map) => app.applyPaint(intent, map),
+      onBrush: (px, py, radius) => app.onBrush(px, py, radius),
+      pickDepth: (px, py) => app.pickSurfaceDepth(px, py),
     });
-    this.chrome.setupToolbar();
+    app.chrome.setupToolbar();
 
     this.ui.deleteBtn.addEventListener("click", () => {
-      if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
-        const id = this.editingLabelId;
-        this.editingLabelId = null; // overlay is going away — skip restore
-        this.labels.remove(id);
-        this.cancelPendingSelection();
+      if (app.editingLabelId && app.labels && confirm("Delete this label?")) {
+        const id = app.editingLabelId;
+        app.editingLabelId = null; // overlay is going away — skip restore
+        app.labels.remove(id);
+        app.cancelPendingSelection();
         this.renderLabelList();
       }
     });
 
     // review-sheet controls that live outside ReviewMode's own bindings
     const bindTool = (id, fn) => document.getElementById(id).addEventListener("click", fn);
-    bindTool("ra-discard", () => this.cancelPendingSelection());
+    bindTool("ra-discard", () => app.cancelPendingSelection());
     bindTool("ra-delete", () => {
-      if (!this.editingLabelId || !this.labels) return;
+      if (!app.editingLabelId || !app.labels) return;
       if (!confirm("Delete this label?")) return;
-      const id = this.editingLabelId;
-      this.editingLabelId = null; // gone — no overlay to restore
-      this.pending = null;
-      this.reviewCtl.pendingDirty = false;
-      if (this.selector) this.selector.clearHighlight();
-      this.labels.remove(id);
-      if (this.review) this.review.removeCurrentItem();
+      const id = app.editingLabelId;
+      app.editingLabelId = null; // gone — no overlay to restore
+      app.pending = null;
+      app.reviewCtl.pendingDirty = false;
+      if (app.selector) app.selector.clearHighlight();
+      app.labels.remove(id);
+      if (app.review) app.review.removeCurrentItem();
       this.renderLabelList();
     });
     this.ui.save.addEventListener("click", () => this.saveLabel());
-    this.ui.cancel.addEventListener("click", () => this.cancelPendingSelection());
+    this.ui.cancel.addEventListener("click", () => app.cancelPendingSelection());
     this.ui.autoBtn.addEventListener("click", () => {
       document.getElementById("labels-menu").classList.remove("open");
-      this.runAutoTag();
+      app.runAutoTag();
     });
     this.ui.export.addEventListener("click", () => {
       document.getElementById("labels-menu").classList.remove("open");
-      if (this.labels) this.labels.exportDownload();
+      if (app.labels) app.labels.exportDownload();
     });
     this.ui.clear.addEventListener("click", () => {
       document.getElementById("labels-menu").classList.remove("open");
-      if (this.labels && confirm("Delete all labels for this map?")) {
-        this.labels.clearAll();
+      if (app.labels && confirm("Delete all labels for this map?")) {
+        app.labels.clearAll();
         this.renderLabelList();
       }
     });
@@ -139,8 +150,8 @@ export const labelingMixin = {
       this.viewMode = btn.dataset.view;
       this.isolatedClass = null;
       this.syncViewUI();
-      if (this.labels) {
-        this.labels.applyView({ mode: this.viewMode, classId: null });
+      if (app.labels) {
+        app.labels.applyView({ mode: this.viewMode, classId: null });
       }
     });
     const classRow = document.getElementById("view-classes");
@@ -153,13 +164,13 @@ export const labelingMixin = {
       b.addEventListener("click", () => {
         this.isolatedClass = this.isolatedClass === cls.id ? null : cls.id;
         this.syncViewUI();
-        if (this.labels) {
-          this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
+        if (app.labels) {
+          app.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
         }
       });
       classRow.appendChild(b);
     }
-  },
+  }
 
   syncViewUI() {
     for (const b of document.getElementById("view-modes").children) {
@@ -171,7 +182,7 @@ export const labelingMixin = {
     for (const b of document.getElementById("view-classes").children) {
       b.classList.toggle("active", b.dataset.cls === this.isolatedClass);
     }
-  },
+  }
 
   pickClass(id) {
     this.pickedClass = id;
@@ -181,19 +192,20 @@ export const labelingMixin = {
     for (const b of this.ui.classGrid.children) {
       b.classList.toggle("active", b.dataset.cls === id);
     }
-  },
+  }
 
   pickConfidence(id) {
     this.pickedConfidence = id;
     const conf = CONFIDENCE_LEVELS.find((c) => c.id === id);
     if (this.ui.confDot) this.ui.confDot.style.background = conf ? conf.color : "#fff";
     if (this.ui.confName) this.ui.confName.textContent = conf ? conf.name : id;
-  },
+  }
 
   showLabelPanel() {
-    if (!this.ui || !this.pending) return;
-    const p = this.pending;
-    const editing = !!this.editingLabelId;
+    const app = this.app;
+    if (!this.ui || !app.pending) return;
+    const p = app.pending;
+    const editing = !!app.editingLabelId;
     this.ui.summary.textContent = `${p.faceCount.toLocaleString()} faces`;
     // Preselect the suggested class on a fresh selection; keep the user's
     // picks while they refine or edit an existing label.
@@ -205,52 +217,54 @@ export const labelingMixin = {
     this.ui.save.textContent = editing ? "Update" : "Save";
     this.ui.classGrid.classList.remove("open"); // bar first; picker on demand
     this.ui.panel.classList.add("active");
-    this.chrome.showDock(true);
-  },
+    app.chrome.showDock(true);
+  }
 
   saveLabel() {
-    if (!this.pending || !this.labels || !this.pickedClass) return;
-    const wasEditing = !!this.editingLabelId;
+    const app = this.app;
+    if (!app.pending || !app.labels || !this.pickedClass) return;
+    const wasEditing = !!app.editingLabelId;
     if (wasEditing) {
-      this.labels.update(this.editingLabelId, {
-        selected: this.pending.selected,
+      app.labels.update(app.editingLabelId, {
+        selected: app.pending.selected,
         classId: this.pickedClass,
         confidence: this.pickedConfidence,
       });
-      this.editingLabelId = null; // updated overlay repaints visible
+      app.editingLabelId = null; // updated overlay repaints visible
     } else {
-      this.labels.add({
-        selected: this.pending.selected,
+      app.labels.add({
+        selected: app.pending.selected,
         classId: this.pickedClass,
         confidence: this.pickedConfidence,
-        suggested: this.pending.suggested,
-        targetClass: this.pending.targetClass,
+        suggested: app.pending.suggested,
+        targetClass: app.pending.targetClass,
       });
     }
-    this.cancelPendingSelection();
+    app.cancelPendingSelection();
     // Reveal what was just tagged: if overlays are hidden, flip to Tagged so
     // the new label is visible (don't override a filter the user chose).
-    if (this.mode === "explore" && this.viewMode === "hidden") {
+    if (app.mode === "explore" && this.viewMode === "hidden") {
       this.viewMode = "all";
       this.syncViewUI();
     }
     this.renderLabelList();
-  },
+  }
 
   // The status card is now just a count + coverage + view filters (the big
   // per-label list is gone — it's noise during tagging). Mode toggle owns the
   // Explore/Review switch, so no Review button here.
   renderLabelList() {
-    if (!this.ui || !this.labels) return;
-    if (this.mode === "review") return; // review owns overlay visibility
-    this.ui.card.classList.toggle("active", !this.pending);
-    const labels = this.labels.list;
+    const app = this.app;
+    if (!this.ui || !app.labels) return;
+    if (app.mode === "review") return; // review owns overlay visibility
+    this.ui.card.classList.toggle("active", !app.pending);
+    const labels = app.labels.list;
     this.ui.count.textContent = `${labels.length} label${labels.length === 1 ? "" : "s"}`;
-    this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
+    app.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
     const covEl = document.getElementById("labels-coverage");
     if (labels.length) {
       const compute = () => {
-        covEl.textContent = `${this.labels.coverage().toFixed(0)}% covered`;
+        covEl.textContent = `${app.labels.coverage().toFixed(0)}% covered`;
       };
       if (window.requestIdleCallback) requestIdleCallback(compute);
       else setTimeout(compute, 50);
@@ -260,6 +274,6 @@ export const labelingMixin = {
     // Review is only reachable with something to review.
     const rv = document.getElementById("mode-review");
     if (rv) rv.disabled = !labels.length;
-    this.chrome.syncModeToggle();
-  },
-};
+    app.chrome.syncModeToggle();
+  }
+}

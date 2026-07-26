@@ -36,8 +36,8 @@ export class ReviewController {
     };
     app.pending.faceCount = item.label.faceCount;
     this.pendingDirty = false;
-    app.pickClass(item.label.class);
-    app.pickConfidence(item.label.confidence);
+    app.labelingCtl.pickClass(item.label.class);
+    app.labelingCtl.pickConfidence(item.label.confidence);
     app.selector.showFaces(app.pending.selected);
     this.updateReviewSheet();
     this.setReviewAdjusting(false); // each item starts as clean triage
@@ -86,7 +86,7 @@ export class ReviewController {
     ui.skip.style.display = dirty ? "none" : "";
     ui.correct.textContent = dirty ? "✓ Save changes" : "✓ Confirm";
     app.chrome.syncDock();
-    const cls = LABEL_CLASSES.find((c) => c.id === app.pickedClass);
+    const cls = LABEL_CLASSES.find((c) => c.id === app.labelingCtl.pickedClass);
     if (cls) {
       ui.klass.textContent = cls.name;
       ui.classHero.style.setProperty("--cls", cls.color);
@@ -103,7 +103,7 @@ export class ReviewController {
     if (!this.pendingDirty) return false; // let ReviewMode.correct() run
     app.labels.update(app.editingLabelId, {
       selected: app.pending.selected,
-      classId: app.pickedClass,
+      classId: app.labelingCtl.pickedClass,
       confidence: "confirmed",
     });
     this.pendingDirty = false;
@@ -115,7 +115,7 @@ export class ReviewController {
   // Class chip: clean = classic reclass verb (advance); dirty = just set the
   // class, it saves with the rest of the edit.
   handleReviewReclass(classId) {
-    this.app.pickClass(classId);
+    this.app.labelingCtl.pickClass(classId);
     if (!this.pendingDirty) return false; // default reclass+advance
     this.updateReviewSheet();
     return true;
@@ -158,7 +158,7 @@ export class ReviewController {
           flag: document.getElementById("ra-flag"),
           skip: document.getElementById("ra-skip"),
         },
-        onChange: () => app.renderLabelList(),
+        onChange: () => app.labelingCtl.renderLabelList(),
         onExit: () => this.handleReviewExit(),
         onItemShown: (item) => this.armReviewItem(item),
         onCorrect: () => this.handleReviewConfirm(),
@@ -180,7 +180,7 @@ export class ReviewController {
     app.camera.getWorldDirection(dir);
     app.orbit.target.copy(app.camera.position).addScaledVector(dir, 10);
 
-    app.ui.card.classList.remove("active");
+    app.labelingCtl.ui.card.classList.remove("active");
     document.getElementById("info").classList.remove("active");
     app.chrome.showToolbar(false); // tools stay hidden until Adjust
     app.chrome.syncModeToggle();
@@ -201,6 +201,6 @@ export class ReviewController {
     app.chrome.setTool("navigate"); // resets FP paintMode for explore
     app.chrome.showToolbar(true);
     app.chrome.syncModeToggle();
-    app.renderLabelList();
+    app.labelingCtl.renderLabelList();
   }
 }

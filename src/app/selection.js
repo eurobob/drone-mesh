@@ -103,7 +103,7 @@ export const selectionMixin = {
       }
     });
 
-    this.initLabelUI();
+    this.labelingCtl.initLabelUI();
   },
 
   handleSurfaceSelection(clientX, clientY, rawMods = {}) {
@@ -141,7 +141,7 @@ export const selectionMixin = {
     if (!this.pending && !adjusting && this.labels) {
       const owner = this.labels.findLabelAt(hit.object, hit.faceIndex);
       if (owner) {
-        this.enterEditLabel(owner);
+        this.labelingCtl.enterEditLabel(owner);
         return;
       }
     }
@@ -181,7 +181,7 @@ export const selectionMixin = {
       }
       this.pending.clicks++;
     } else {
-      if (this.editingLabelId) this.exitEditState(); // clicked away mid-edit
+      if (this.editingLabelId) this.labelingCtl.exitEditState(); // clicked away mid-edit
       this.pendingHistory = [];
       this.pending = {
         selected: result.selected,
@@ -205,7 +205,7 @@ export const selectionMixin = {
       this.reviewCtl.pendingDirty = true;
       this.reviewCtl.updateReviewSheet();
     } else {
-      this.showLabelPanel();
+      this.labelingCtl.showLabelPanel();
       // in explore, drag now orbits around the live selection
       if (this.controls) this.controls.orbitTarget = this.selectionCenter();
     }
@@ -278,12 +278,12 @@ export const selectionMixin = {
       this.review.show(this.review.index);
       return;
     }
-    this.exitEditState();
+    this.labelingCtl.exitEditState();
     this.pending = null;
     this.pendingHistory = [];
     if (this.selector) this.selector.clearHighlight();
     this.chrome.showDock(false);
-    if (this.ui) this.ui.panel.classList.remove("active");
+    if (this.labelingCtl.ui) this.labelingCtl.ui.panel.classList.remove("active");
   },
 
   applyPaint(intent, map) {
@@ -299,8 +299,8 @@ export const selectionMixin = {
       this.pending = { selected: sel, targetClass, clicks: 1 };
       this.pending.faceCount = 0;
       this.pending.suggested = this.labels ? this.labels.suggestFor(this.pending) : "other";
-      this.pickClass(this.pending.suggested);
-      this.pickConfidence("confirmed");
+      this.labelingCtl.pickClass(this.pending.suggested);
+      this.labelingCtl.pickConfidence("confirmed");
       this.pending.clicks = 2; // suggestion applied; don't re-pick as it grows
       this.refreshPending();
       return;
