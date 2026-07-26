@@ -6,9 +6,9 @@ import { Diagnostics } from "./Diagnostics.js";
 import { hudMixin } from "./app/hud.js";
 import { loadingMixin } from "./app/loading.js";
 import { ChromeController } from "./app/ChromeController.js";
+import { ReviewController } from "./app/ReviewController.js";
 import { labelingMixin } from "./app/labeling.js";
 import { selectionMixin } from "./app/selection.js";
-import { reviewMixin } from "./app/review.js";
 
 // The high-res model is 130 tiles, each with its own ~2048x2048 texture. Decoded
 // to GPU memory that is ~2.5 GB of VRAM all at once - far beyond what any tablet
@@ -102,8 +102,10 @@ class MeshExplorer {
     this.pendingHistory = [];
     this.editingLabelId = null;
 
-    // Tool bar + editing chrome, first of the app-as-coordinator controllers.
+    // App-as-coordinator controllers (own their slice of state; reach `this`
+    // for shared state). reviewCtl coordinates the ReviewMode engine (this.review).
     this.chrome = new ChromeController(this);
+    this.reviewCtl = new ReviewController(this);
 
     this.init();
     this.setupEventListeners();
@@ -466,7 +468,6 @@ Object.assign(
   loadingMixin,
   labelingMixin,
   selectionMixin,
-  reviewMixin
 );
 
 new MeshExplorer();

@@ -83,21 +83,21 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
     targetClass: "roof-flat",
   });
 
-  app.enterReviewMode();
+  app.reviewCtl.enterReviewMode();
   assert(app.mode === "review", "enterReviewMode switches mode");
   assert(document.body.classList.contains("review-mode"), "review-mode body class set");
   assert(app.pending && app.pending.selected.size, "first queue item armed as a live pending selection");
-  assert(app.reviewAdjust === true, "review item is armed for editing");
+  assert(app.reviewCtl.reviewAdjust === true, "review item is armed for editing");
 
-  app.setReviewAdjusting(true);
+  app.reviewCtl.setReviewAdjusting(true);
   assert(document.body.classList.contains("adjusting"), "Adjust reveals the editing tools (body.adjusting)");
-  app.setReviewAdjusting(false);
+  app.reviewCtl.setReviewAdjusting(false);
   assert(!document.body.classList.contains("adjusting"), "leaving Adjust clears body.adjusting");
 
   // dirty edit → Confirm saves the reclass instead of running the plain verb
-  app.pendingDirty = true;
+  app.reviewCtl.pendingDirty = true;
   app.pickClass("ground");
-  const handled = app.handleReviewConfirm();
+  const handled = app.reviewCtl.handleReviewConfirm();
   assert(handled === true, "dirty Confirm is handled as a save");
   assert(labels.list[0].class === "ground", "the reclass was saved to the label");
 }
@@ -174,7 +174,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
   labels.add({ selected: new Map([[mesh, new Set([0])]]), classId: "ground", confidence: "unsure", suggested: "ground", targetClass: "roof-flat" });
   labels.add({ selected: new Map([[mesh, new Set([1])]]), classId: "ground", confidence: "unsure", suggested: "ground", targetClass: "roof-flat" });
 
-  app.enterReviewMode();
+  app.reviewCtl.enterReviewMode();
   assert(app.review.active, "review active with a queue");
   const total = app.review.queue.length;
   assert(total === 2, "queue holds both labels");
@@ -182,7 +182,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
   app.review.skip();
   app.review.skip();
   assert(app.review.index >= total, "skipping through the queue completes it");
-  assert(app.reviewAdjust === false, "completion disarms editing");
+  assert(app.reviewCtl.reviewAdjust === false, "completion disarms editing");
   assert(
     document.getElementById("ra-adjust").style.display === "none",
     "Adjust button is hidden at completion"

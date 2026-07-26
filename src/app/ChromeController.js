@@ -163,7 +163,7 @@ export class ChromeController {
 
     // review: reveal/hide the editing tools for the current item
     document.getElementById("ra-adjust").addEventListener("click", () =>
-      app.setReviewAdjusting(!app.reviewAdjusting)
+      app.reviewCtl.setReviewAdjusting(!app.reviewCtl.reviewAdjusting)
     );
 
     // top-center: Explore / Review
@@ -171,7 +171,7 @@ export class ChromeController {
       if (app.mode === "review" && app.review) app.review.exit();
     });
     document.getElementById("mode-review").addEventListener("click", () => {
-      if (app.mode === "explore") app.enterReviewMode();
+      if (app.mode === "explore") app.reviewCtl.enterReviewMode();
     });
 
     // top-right: tucked utilities menu

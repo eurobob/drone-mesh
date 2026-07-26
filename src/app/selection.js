@@ -68,7 +68,7 @@ export const selectionMixin = {
 
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (this.mode === "review" && this.pendingDirty) {
+        if (this.mode === "review" && this.reviewCtl.pendingDirty) {
           this.cancelPendingSelection(); // discard edits, stay on the item
         } else if (this.mode === "review" && this.review) {
           this.review.exit();
@@ -77,7 +77,7 @@ export const selectionMixin = {
         }
         return;
       }
-      if (event.key === "z" && this.pending && (this.mode === "explore" || this.reviewAdjust)) {
+      if (event.key === "z" && this.pending && (this.mode === "explore" || this.reviewCtl.reviewAdjust)) {
         this.undoPending();
         return;
       }
@@ -96,7 +96,7 @@ export const selectionMixin = {
       }
       // Desktop review shortcuts (FirstPersonControls is disabled in review,
       // so no WASD conflicts).
-      if (this.mode === "review" && this.review && this.review.active && !this.pendingDirty) {
+      if (this.mode === "review" && this.review && this.review.active && !this.reviewCtl.pendingDirty) {
         if (event.key === "Enter") this.review.correct();
         else if (event.key === "s" || event.key === "S") this.review.skip();
         else if (event.key === "f" || event.key === "F") this.review.flag();
@@ -108,7 +108,7 @@ export const selectionMixin = {
 
   handleSurfaceSelection(clientX, clientY, rawMods = {}) {
     if (this.chrome.editTool !== "tap") return; // brush/lasso own the pointer
-    const adjusting = this.mode === "review" && this.reviewAdjust;
+    const adjusting = this.mode === "review" && this.reviewCtl.reviewAdjust;
     if (this.mode !== "explore" && !adjusting) return;
     if (!this.currentMesh || !this.selector) return;
 
@@ -201,9 +201,9 @@ export const selectionMixin = {
     for (const set of p.selected.values()) p.faceCount += set.size;
     p.suggested = this.labels ? this.labels.suggestFor(p) : "other";
     this.selector.showFaces(p.selected);
-    if (this.mode === "review" && this.reviewAdjust) {
-      this.pendingDirty = true;
-      this.updateReviewSheet();
+    if (this.mode === "review" && this.reviewCtl.reviewAdjust) {
+      this.reviewCtl.pendingDirty = true;
+      this.reviewCtl.updateReviewSheet();
     } else {
       this.showLabelPanel();
       // in explore, drag now orbits around the live selection
@@ -274,7 +274,7 @@ export const selectionMixin = {
       this.controls.syncFromCamera(); // adopt current orientation (no snap)
     }
     // In review, "cancel" means discard edits: re-present the item fresh.
-    if (this.mode === "review" && this.reviewAdjust && this.review) {
+    if (this.mode === "review" && this.reviewCtl.reviewAdjust && this.review) {
       this.review.show(this.review.index);
       return;
     }

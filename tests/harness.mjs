@@ -12,7 +12,7 @@ import { LabelManager } from "../src/Labels.js";
 import { ChromeController } from "../src/app/ChromeController.js";
 import { labelingMixin } from "../src/app/labeling.js";
 import { selectionMixin } from "../src/app/selection.js";
-import { reviewMixin } from "../src/app/review.js";
+import { ReviewController } from "../src/app/ReviewController.js";
 
 // --- jsdom globals (installed once at import) ------------------------------
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -106,9 +106,6 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       pendingHistory: [],
       editingLabelId: null,
       review: null,
-      pendingDirty: false,
-      reviewAdjust: false,
-      reviewAdjusting: false,
       streamer: null,
       debugLOD: false,
       debugViz: false,
@@ -117,13 +114,13 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
     },
     labelingMixin,
     selectionMixin,
-    reviewMixin
   );
 
   // Chrome is a controller (owns tool/intent), not a mixin — create before the
   // UI wiring, which calls this.chrome.setupToolbar().
   app.chrome = new ChromeController(app);
   app.chrome.editTool = editTool;
+  app.reviewCtl = new ReviewController(app);
 
   // Real UI wiring (creates app.ui + app.paint via PaintTools, binds the bar).
   app.initLabelUI();

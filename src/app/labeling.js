@@ -107,7 +107,7 @@ export const labelingMixin = {
       const id = this.editingLabelId;
       this.editingLabelId = null; // gone — no overlay to restore
       this.pending = null;
-      this.pendingDirty = false;
+      this.reviewCtl.pendingDirty = false;
       if (this.selector) this.selector.clearHighlight();
       this.labels.remove(id);
       if (this.review) this.review.removeCurrentItem();
