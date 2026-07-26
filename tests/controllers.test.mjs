@@ -102,4 +102,91 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
   assert(labels.list[0].class === "ground", "the reclass was saved to the label");
 }
 
+// --- labeling: click-to-edit an existing label ----------------------------
+{
+  const { app, mesh, labels } = makeApp();
+  const label = labels.add({
+    selected: wholeQuad(mesh),
+    classId: "ground",
+    confidence: "unsure",
+    suggested: "ground",
+    targetClass: "roof-flat",
+  });
+
+  app.enterEditLabel(label);
+  assert(app.editingLabelId === label.id, "enterEditLabel targets the tapped label");
+  assert(app.pending && app.pending.faceCount === 2, "editing loads the label's faces as pending");
+  assert(app.pickedClass === "ground", "editing preselects the label's own class");
+
+  app.pickClass("building-roof");
+  app.saveLabel();
+  assert(labels.list.length === 1, "editing updates in place — no duplicate label");
+  assert(labels.list[0].class === "building-roof", "the edit saved the new class");
+  assert(app.editingLabelId === null, "edit state clears after save");
+}
+
+// --- selection: grow snapshots undo; shrink refuses to erase everything ----
+{
+  const { app, mesh } = makeApp();
+  app.applyPaint("add", wholeQuad(mesh));
+
+  const h0 = app.pendingHistory.length;
+  app.growPending();
+  assert(app.pendingHistory.length === h0 + 1, "growPending snapshots history for undo");
+  app.undoPending();
+  assert(app.pending.faceCount === 2, "undo after grow restores the selection");
+
+  app.shrinkPending();
+  assert(app.pending.faceCount === 2, "shrink refuses to erode the selection to nothing");
+}
+
+// --- selection: brush seeds a selection from the surface under the cursor --
+{
+  const { app, mesh } = makeApp();
+  app.camera.position.set(0.5, 5, 0.5);
+  app.camera.lookAt(0.5, 0, 0.5); // straight down onto the fixture quad
+  app.camera.updateMatrixWorld(true);
+  app.editIntent = "add";
+
+  app.onBrush(400, 300, 40); // canvas centre → NDC (0,0) → ray hits the quad
+  assert(app.pending && app.pending.faceCount >= 1, "brush at a surface starts a pending selection");
+}
+
+// --- labeling: view-filter wiring ------------------------------------------
+{
+  const { app, mesh, labels } = makeApp();
+  labels.add({
+    selected: wholeQuad(mesh),
+    classId: "ground",
+    confidence: "confirmed",
+    suggested: "ground",
+    targetClass: "roof-flat",
+  });
+  app.renderLabelList();
+
+  document.querySelector('#view-modes [data-view="all"]').click();
+  assert(app.viewMode === "all", "clicking a view mode updates the active view");
+}
+
+// --- review: skipping through the queue completes and disarms --------------
+{
+  const { app, mesh, labels } = makeApp();
+  labels.add({ selected: new Map([[mesh, new Set([0])]]), classId: "ground", confidence: "unsure", suggested: "ground", targetClass: "roof-flat" });
+  labels.add({ selected: new Map([[mesh, new Set([1])]]), classId: "ground", confidence: "unsure", suggested: "ground", targetClass: "roof-flat" });
+
+  app.enterReviewMode();
+  assert(app.review.active, "review active with a queue");
+  const total = app.review.queue.length;
+  assert(total === 2, "queue holds both labels");
+
+  app.review.skip();
+  app.review.skip();
+  assert(app.review.index >= total, "skipping through the queue completes it");
+  assert(app.reviewAdjust === false, "completion disarms editing");
+  assert(
+    document.getElementById("ra-adjust").style.display === "none",
+    "Adjust button is hidden at completion"
+  );
+}
+
 console.log("\nAll controller tests passed.");
