@@ -11,7 +11,7 @@ import { SurfaceSelector } from "../src/SurfaceSelector.js";
 import { LabelManager } from "../src/Labels.js";
 import { ChromeController } from "../src/app/ChromeController.js";
 import { LabelingController } from "../src/app/LabelingController.js";
-import { selectionMixin } from "../src/app/selection.js";
+import { SelectionController } from "../src/app/SelectionController.js";
 import { ReviewController } from "../src/app/ReviewController.js";
 
 // --- jsdom globals (installed once at import) ------------------------------
@@ -110,7 +110,6 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       debugLOD: false,
       debugViz: false,
     },
-    selectionMixin,
   );
 
   // Chrome is a controller (owns tool/intent), not a mixin — create before the
@@ -119,6 +118,7 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
   app.chrome.editTool = editTool;
   app.reviewCtl = new ReviewController(app);
   app.labelingCtl = new LabelingController(app);
+  app.selectionCtl = new SelectionController(app);
 
   // Real UI wiring (creates app.ui + app.paint via PaintTools, binds the bar).
   app.labelingCtl.initLabelUI();

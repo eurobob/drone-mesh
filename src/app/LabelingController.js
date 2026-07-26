@@ -25,7 +25,7 @@ export class LabelingController {
       targetClass: label.geomClass || "roof-flat",
       clicks: 1,
     };
-    app.refreshPending();
+    app.selectionCtl.refreshPending();
     // panel opens via refreshPending; preselect the label's own values
     this.pickClass(label.class);
     this.pickConfidence(label.confidence);
@@ -91,11 +91,11 @@ export class LabelingController {
       domElement: app.renderer.domElement,
       container: document.getElementById("canvas-container"),
       camera: app.camera,
-      getCandidates: (intent) => app.paintCandidates(intent),
-      onGestureStart: () => app.pushPendingHistory(),
-      onApply: (intent, map) => app.applyPaint(intent, map),
-      onBrush: (px, py, radius) => app.onBrush(px, py, radius),
-      pickDepth: (px, py) => app.pickSurfaceDepth(px, py),
+      getCandidates: (intent) => app.selectionCtl.paintCandidates(intent),
+      onGestureStart: () => app.selectionCtl.pushPendingHistory(),
+      onApply: (intent, map) => app.selectionCtl.applyPaint(intent, map),
+      onBrush: (px, py, radius) => app.selectionCtl.onBrush(px, py, radius),
+      pickDepth: (px, py) => app.selectionCtl.pickSurfaceDepth(px, py),
     });
     app.chrome.setupToolbar();
 
@@ -104,14 +104,14 @@ export class LabelingController {
         const id = app.editingLabelId;
         app.editingLabelId = null; // overlay is going away — skip restore
         app.labels.remove(id);
-        app.cancelPendingSelection();
+        app.selectionCtl.cancelPendingSelection();
         this.renderLabelList();
       }
     });
 
     // review-sheet controls that live outside ReviewMode's own bindings
     const bindTool = (id, fn) => document.getElementById(id).addEventListener("click", fn);
-    bindTool("ra-discard", () => app.cancelPendingSelection());
+    bindTool("ra-discard", () => app.selectionCtl.cancelPendingSelection());
     bindTool("ra-delete", () => {
       if (!app.editingLabelId || !app.labels) return;
       if (!confirm("Delete this label?")) return;
@@ -125,7 +125,7 @@ export class LabelingController {
       this.renderLabelList();
     });
     this.ui.save.addEventListener("click", () => this.saveLabel());
-    this.ui.cancel.addEventListener("click", () => app.cancelPendingSelection());
+    this.ui.cancel.addEventListener("click", () => app.selectionCtl.cancelPendingSelection());
     this.ui.autoBtn.addEventListener("click", () => {
       document.getElementById("labels-menu").classList.remove("open");
       app.runAutoTag();
@@ -240,7 +240,7 @@ export class LabelingController {
         targetClass: app.pending.targetClass,
       });
     }
-    app.cancelPendingSelection();
+    app.selectionCtl.cancelPendingSelection();
     // Reveal what was just tagged: if overlays are hidden, flip to Tagged so
     // the new label is visible (don't override a filter the user chose).
     if (app.mode === "explore" && this.viewMode === "hidden") {

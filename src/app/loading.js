@@ -317,6 +317,30 @@ export const loadingMixin = {
     }
   },
 
+  // Downscale a texture's backing image in place (base-layer memory trim).
+  // No-op if already small or the image can't be drawn.
+  downscaleTexture(tex, maxSize) {
+    if (!tex || !tex.image) return;
+    const img = tex.image;
+    const w = img.width || img.videoWidth || 0;
+    const h = img.height || img.videoHeight || 0;
+    if (!w || !h || Math.max(w, h) <= maxSize) return;
+    try {
+      const s = maxSize / Math.max(w, h);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w * s));
+      canvas.height = Math.max(1, Math.round(h * s));
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      tex.image = canvas;
+      tex.needsUpdate = true;
+      if (typeof img.close === "function") {
+        try { img.close(); } catch (e) { /* ignore */ }
+      }
+    } catch (e) {
+      /* CORS-tainted or unsupported — leave as-is */
+    }
+  },
+
   async setupMesh(mesh) {
     const startTime = performance.now();
     let lastTime = startTime;

@@ -142,9 +142,9 @@ export class ChromeController {
     document.getElementById("tb-erase").addEventListener("click", () =>
       this.setIntent(this.editIntent === "add" ? "remove" : "add")
     );
-    document.getElementById("tb-undo").addEventListener("click", () => app.undoPending());
-    document.getElementById("tb-grow").addEventListener("click", () => app.growPending());
-    document.getElementById("tb-shrink").addEventListener("click", () => app.shrinkPending());
+    document.getElementById("tb-undo").addEventListener("click", () => app.selectionCtl.undoPending());
+    document.getElementById("tb-grow").addEventListener("click", () => app.selectionCtl.growPending());
+    document.getElementById("tb-shrink").addEventListener("click", () => app.selectionCtl.shrinkPending());
 
     // top-left: focus-view cluster (single icon → expandable menu) + info
     const focusGroup = document.getElementById("focus-group");

@@ -126,7 +126,7 @@ export class ReviewController {
     if (app.mode === "review") return;
     if (!app.labels || !app.labels.list.length) return;
 
-    app.cancelPendingSelection();
+    app.selectionCtl.cancelPendingSelection();
 
     if (!app.orbit) {
       app.orbit = new OrbitControls(app.camera, app.renderer.domElement);

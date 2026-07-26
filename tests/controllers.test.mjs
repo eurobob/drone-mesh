@@ -8,7 +8,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
 {
   const { app, mesh, labels } = makeApp();
 
-  app.applyPaint("add", wholeQuad(mesh)); // brush/lasso-style add with no prior pending
+  app.selectionCtl.applyPaint("add", wholeQuad(mesh)); // brush/lasso-style add with no prior pending
   assert(app.pending && app.pending.faceCount === 2, "applyPaint(add) starts a pending selection");
   assert(
     document.getElementById("label-panel").classList.contains("active"),
@@ -34,17 +34,17 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
 {
   const { app, mesh } = makeApp();
 
-  app.applyPaint("add", wholeQuad(mesh));
+  app.selectionCtl.applyPaint("add", wholeQuad(mesh));
   assert(app.pending.faceCount === 2, "pending has both faces");
 
-  app.pushPendingHistory();
-  app.applyPaint("remove", new Map([[mesh, new Set([1])]]));
+  app.selectionCtl.pushPendingHistory();
+  app.selectionCtl.applyPaint("remove", new Map([[mesh, new Set([1])]]));
   assert(app.pending.faceCount === 1, "remove drops a face");
 
-  app.undoPending();
+  app.selectionCtl.undoPending();
   assert(app.pending.faceCount === 2, "undo restores the prior selection");
 
-  app.cancelPendingSelection();
+  app.selectionCtl.cancelPendingSelection();
   assert(app.pending === null, "cancel clears the pending selection");
   assert(
     !document.getElementById("label-panel").classList.contains("active"),
@@ -128,15 +128,15 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
 // --- selection: grow snapshots undo; shrink refuses to erase everything ----
 {
   const { app, mesh } = makeApp();
-  app.applyPaint("add", wholeQuad(mesh));
+  app.selectionCtl.applyPaint("add", wholeQuad(mesh));
 
   const h0 = app.pendingHistory.length;
-  app.growPending();
+  app.selectionCtl.growPending();
   assert(app.pendingHistory.length === h0 + 1, "growPending snapshots history for undo");
-  app.undoPending();
+  app.selectionCtl.undoPending();
   assert(app.pending.faceCount === 2, "undo after grow restores the selection");
 
-  app.shrinkPending();
+  app.selectionCtl.shrinkPending();
   assert(app.pending.faceCount === 2, "shrink refuses to erode the selection to nothing");
 }
 
@@ -148,7 +148,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
   app.camera.updateMatrixWorld(true);
   app.chrome.editIntent = "add";
 
-  app.onBrush(400, 300, 40); // canvas centre → NDC (0,0) → ray hits the quad
+  app.selectionCtl.onBrush(400, 300, 40); // canvas centre → NDC (0,0) → ray hits the quad
   assert(app.pending && app.pending.faceCount >= 1, "brush at a surface starts a pending selection");
 }
 

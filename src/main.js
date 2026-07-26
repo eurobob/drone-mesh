@@ -8,7 +8,7 @@ import { loadingMixin } from "./app/loading.js";
 import { ChromeController } from "./app/ChromeController.js";
 import { ReviewController } from "./app/ReviewController.js";
 import { LabelingController } from "./app/LabelingController.js";
-import { selectionMixin } from "./app/selection.js";
+import { SelectionController } from "./app/SelectionController.js";
 
 // The high-res model is 130 tiles, each with its own ~2048x2048 texture. Decoded
 // to GPU memory that is ~2.5 GB of VRAM all at once - far beyond what any tablet
@@ -107,6 +107,7 @@ class MeshExplorer {
     this.chrome = new ChromeController(this);
     this.reviewCtl = new ReviewController(this);
     this.labelingCtl = new LabelingController(this);
+    this.selectionCtl = new SelectionController(this);
 
     this.init();
     this.setupEventListeners();
@@ -296,7 +297,7 @@ class MeshExplorer {
     );
 
     this.updateControlsInfo();
-    this.setupSurfaceSelection();
+    this.selectionCtl.setupSurfaceSelection();
   }
 
   // Surface selection + paint live in ./app/selection.js (setupSurfaceSelection,
@@ -316,7 +317,7 @@ class MeshExplorer {
   async runAutoTag() {
     if (!this.labels || !this.selector || this.mode !== "explore" || this.autoTagging) return;
     this.autoTagging = true;
-    this.cancelPendingSelection();
+    this.selectionCtl.cancelPendingSelection();
     this.showLoading("Auto-tagging surfaces...");
     const progressText = document.getElementById("loading-progress");
     try {
@@ -467,7 +468,6 @@ Object.assign(
   MeshExplorer.prototype,
   hudMixin,
   loadingMixin,
-  selectionMixin,
 );
 
 new MeshExplorer();
