@@ -186,7 +186,7 @@ export class PaintTools {
     e.preventDefault();
     this.domElement.setPointerCapture?.(e.pointerId);
     this.onGestureStart();
-    this.gesture = { mode, ...snap, points: [x, y], anchor: this.pickDepth(x, y) };
+    this.gesture = { mode, ...snap, points: [x, y] };
   }
 
   onPointerMove(e) {
@@ -222,35 +222,35 @@ export class PaintTools {
     if (g.mode === "lasso" && g.points.length >= 6) {
       const hit = new Map();
       const v = new THREE.Vector3();
-      const band = this.depthBand(g.anchor);
+      const cam = this.camera.position;
+      const W = this.domElement.clientWidth;
+      const H = this.domElement.clientHeight;
       for (let i = 0; i < g.cx.length; i++) {
         if (g.removed.has(i)) continue;
-        if (!this.withinDepth(i, g.anchor, band)) continue; // reject background
         v.set(g.cx[i], g.cy[i], g.cz[i]).project(this.camera);
         if (v.z < -1 || v.z > 1) continue; // behind camera / clipped
-        const sx = (v.x * 0.5 + 0.5) * this.domElement.clientWidth;
-        const sy = (-v.y * 0.5 + 0.5) * this.domElement.clientHeight;
-        if (pointInPolygon([sx, sy], g.points)) this.mark(hit, g, i);
+        const sx = (v.x * 0.5 + 0.5) * W;
+        const sy = (-v.y * 0.5 + 0.5) * H;
+        if (!pointInPolygon([sx, sy], g.points)) continue;
+        // Occlusion: keep only faces actually VISIBLE from here. A face hidden
+        // behind a nearer surface at its own screen pixel (the raycast line
+        // passing through a wall/roof to geometry beyond) is rejected — the
+        // lasso acts on what you can see, not everything along the sight line.
+        const front = this.pickDepth(sx, sy);
+        if (front != null) {
+          const dx = g.cx[i] - cam.x;
+          const dy = g.cy[i] - cam.y;
+          const dz = g.cz[i] - cam.z;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (d > front + Math.max(0.5, front * 0.05)) continue; // behind → hidden
+        }
+        this.mark(hit, g, i);
       }
       if (hit.size) this.onApply(this.intent, hit);
     }
     const wasGesture = !!this.gesture;
     this.cancelGesture();
     if (wasGesture) this.onGestureEnd();
-  }
-
-  depthBand(anchor) {
-    // absolute floor + a fraction of distance (perspective foreshortening)
-    return anchor == null ? Infinity : Math.max(2.5, anchor * 0.12);
-  }
-
-  withinDepth(i, anchor, band) {
-    if (anchor == null) return true; // no surface under cursor → don't gate
-    const cam = this.camera.position;
-    const dx = this.gesture.cx[i] - cam.x;
-    const dy = this.gesture.cy[i] - cam.y;
-    const dz = this.gesture.cz[i] - cam.z;
-    return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - anchor) <= band;
   }
 
   mark(hit, g, i) {

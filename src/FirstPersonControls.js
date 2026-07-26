@@ -40,6 +40,14 @@ export class FirstPersonControls {
     this.lastPinchDistance = 0;
     this.lastTwoFingerCenter = { x: 0, y: 0 };
     this.lastThreeFingerCenter = { x: 0, y: 0 };
+    this.lastTwoFingerAngle = null; // finger-line angle, for twist-to-rotate
+
+    // Collision: host assigns the current mesh; navigation is then clamped so
+    // the camera can't cross geometry in the direction of travel (retreating
+    // is always free — the ray only looks the way you're going).
+    this.collider = null;
+    this.collideRay = new THREE.Raycaster();
+    this.collideMargin = 0.4; // scene units to keep off surfaces (> near plane 0.3)
 
     this.velocity = new THREE.Vector3();
     this.direction = new THREE.Vector3();
@@ -173,6 +181,7 @@ export class FirstPersonControls {
       this.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
       this.lastTwoFingerCenter.x = (a[0].x + a[1].x) / 2;
       this.lastTwoFingerCenter.y = (a[0].y + a[1].y) / 2;
+      this.lastTwoFingerAngle = Math.atan2(dy, dx);
     }
   }
 
@@ -216,21 +225,32 @@ export class FirstPersonControls {
     const cx = (a[0].x + a[1].x) / 2;
     const cy = (a[0].y + a[1].y) / 2;
 
+    const angle = Math.atan2(a[0].y - a[1].y, a[0].x - a[1].x);
     if (this.lastPinchDistance > 0) {
       const forward = new THREE.Vector3();
       this.camera.getWorldDirection(forward);
-      // pinch: dolly along view direction
-      this.camera.position.addScaledVector(forward, (dist - this.lastPinchDistance) * 0.06);
+      // pinch: dolly along view direction (collision-clamped)
+      this.moveBy(forward.clone().multiplyScalar((dist - this.lastPinchDistance) * 0.06));
       // two-finger drag: pan (grab-the-world — strafe on X, lift on Y)
       const panX = cx - this.lastTwoFingerCenter.x;
       const panY = cy - this.lastTwoFingerCenter.y;
       const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
-      this.camera.position.addScaledVector(right, -panX * 0.025);
-      this.camera.position.y += panY * 0.025;
+      const panDelta = right.multiplyScalar(-panX * 0.025);
+      panDelta.y += panY * 0.025;
+      this.moveBy(panDelta);
+      // twist the two fingers: rotate heading (yaw). Free-roam only — in orbit
+      // mode the two-finger gesture is grab-the-world pan around the selection.
+      if (this.lastTwoFingerAngle != null && !this.orbitTarget) {
+        let dA = angle - this.lastTwoFingerAngle;
+        if (dA > Math.PI) dA -= 2 * Math.PI;
+        else if (dA < -Math.PI) dA += 2 * Math.PI;
+        this.lon += THREE.MathUtils.radToDeg(dA);
+      }
     }
     this.lastPinchDistance = dist;
     this.lastTwoFingerCenter.x = cx;
     this.lastTwoFingerCenter.y = cy;
+    this.lastTwoFingerAngle = angle;
   }
 
   onTouchEnd(event) {
@@ -247,6 +267,7 @@ export class FirstPersonControls {
       this.moveForward = false;
       this.moveBackward = false;
       this.lastPinchDistance = 0;
+      this.lastTwoFingerAngle = null;
     }
   }
 
@@ -282,8 +303,9 @@ export class FirstPersonControls {
       // orientation and leave the view where the user put it.
       this.camera.getWorldDirection(forward);
       const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
-      this.camera.position.addScaledVector(forward, -this.velocity.z);
-      this.camera.position.addScaledVector(right, -this.velocity.x);
+      this.moveBy(
+        forward.clone().multiplyScalar(-this.velocity.z).addScaledVector(right, -this.velocity.x)
+      );
       this.prevTime = time;
       return;
     }
@@ -304,10 +326,31 @@ export class FirstPersonControls {
     right.crossVectors(forward, this.camera.up);
     right.normalize();
 
-    this.camera.position.addScaledVector(forward, -this.velocity.z);
-    this.camera.position.addScaledVector(right, -this.velocity.x);
+    this.moveBy(
+      forward.clone().multiplyScalar(-this.velocity.z).addScaledVector(right, -this.velocity.x)
+    );
 
     this.prevTime = time;
+  }
+
+  // Move the camera by a world-space delta, clamped by the collider so nav
+  // can't cross geometry in the direction of travel. Retreating is always free
+  // (the ray only looks the way you're going). No collider set → move freely.
+  moveBy(delta) {
+    const len = delta.length();
+    if (!this.collider || len < 1e-6) {
+      this.camera.position.add(delta);
+      return;
+    }
+    const dir = delta.clone().multiplyScalar(1 / len);
+    this.collideRay.set(this.camera.position, dir);
+    const hits = this.collideRay.intersectObject(this.collider, true);
+    if (hits.length && hits[0].distance < len + this.collideMargin) {
+      const allowed = Math.max(0, hits[0].distance - this.collideMargin);
+      this.camera.position.addScaledVector(dir, allowed);
+    } else {
+      this.camera.position.add(delta);
+    }
   }
 
   // Orbit the camera around orbitTarget by drag deltas (screen px).

@@ -425,6 +425,7 @@ export const loadingMixin = {
     // Add to scene
     this.scene.add(mesh);
     this.currentMesh = mesh;
+    if (this.controls) this.controls.collider = mesh; // nav collision target
     logTiming("Added to scene");
 
     // Force render
