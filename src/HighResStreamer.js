@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { cachedArrayBuffer } from "./modelCache.js";
 
 // The high-res model is one Draco-compressed mesh with 130 primitives, each
 // with its own ~2048x2048 webp texture (EXT_texture_webp). If GLTFLoader parses
@@ -151,9 +152,7 @@ export class HighResStreamer {
   // Fetch + strip + load geometry, overlay it on the low-res base. Resolves once
   // the (untextured) high-res geometry is in the scene; textures stream in after.
   async load(url, lowResObject) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`high-res fetch failed: ${res.status}`);
-    const buffer = await res.arrayBuffer();
+    const buffer = await cachedArrayBuffer(url); // IndexedDB-cached (see modelCache)
 
     const { json, bin } = this.parseGLB(buffer);
     const imageByMaterial = this.extractTileImages(json, bin);

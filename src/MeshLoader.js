@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { cachedArrayBuffer } from './modelCache.js';
 
 export class MeshLoader {
   constructor(scene) {
@@ -217,13 +218,18 @@ export class MeshLoader {
     });
   }
 
-  loadGLTF(url, onProgress) {
+  async loadGLTF(url, onProgress) {
+    console.log('Starting GLTF load from URL:', url);
+    // Fetch bytes through the IndexedDB cache (survives HMR reloads), then
+    // parse — the GLB is self-contained (Draco decoder is set on the loader),
+    // so no resource path is needed.
+    const buffer = await cachedArrayBuffer(url, onProgress);
     return new Promise((resolve, reject) => {
-      console.log('Starting GLTF load from URL:', url);
-      this.loaders.gltf.load(
-        url,
+      this.loaders.gltf.parse(
+        buffer,
+        "",
         (gltf) => {
-          console.log('GLTF loaded successfully:', gltf);
+          console.log('GLTF parsed successfully:', gltf);
           const object = gltf.scene;
           object.traverse((child) => {
             if (child instanceof THREE.Mesh) {
@@ -240,19 +246,10 @@ export class MeshLoader {
               }
             }
           });
-          // Don't add to scene yet - let main.js handle it after processing
-          // this.scene.add(object);
           resolve(object);
         },
-        (progress) => {
-          if (progress.total > 0) {
-            const percent = Math.round((progress.loaded / progress.total) * 100);
-            console.log('Loading progress:', percent + '%');
-            if (onProgress) onProgress(progress);
-          }
-        },
         (error) => {
-          console.error('GLTF loading error:', error);
+          console.error('GLTF parse error:', error);
           reject(error);
         }
       );
