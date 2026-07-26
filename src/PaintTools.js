@@ -242,7 +242,7 @@ export class PaintTools {
           const dy = g.cy[i] - cam.y;
           const dz = g.cz[i] - cam.z;
           const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (d > front + Math.max(0.5, front * 0.05)) continue; // behind → hidden
+          if (d > front + Math.max(0.25, front * 0.02)) continue; // behind → hidden
         }
         this.mark(hit, g, i);
       }

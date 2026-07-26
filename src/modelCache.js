@@ -2,11 +2,30 @@
 // change) doesn't re-download the 10 MB low-res + 61 MB high-res every time.
 // IndexedDB (not the Cache Storage API) because it works in NON-secure contexts
 // too — the dev test URL is plain http over Tailscale, where `caches` is absent.
-// Entries carry a timestamp and expire after TTL_MS (default ~2 days).
+// Values are stored as Blobs: iOS Safari handles large binary in IndexedDB far
+// more reliably as a Blob (file-backed) than as a raw ArrayBuffer (which it
+// structured-clones into memory and can reject/evict). Entries carry a
+// timestamp and expire after TTL_MS (~2 days).
 
 const DB_NAME = "dmt-models";
 const STORE = "glb";
 const TTL_MS = 2 * 24 * 60 * 60 * 1000; // 2 days
+
+// Ask the browser not to evict our storage (best-effort; ignored where
+// unsupported). Fire once.
+let persistAsked = false;
+function requestPersist() {
+  if (persistAsked) return;
+  persistAsked = true;
+  try {
+    navigator.storage?.persist?.().then(
+      (granted) => console.log(`[cache] persistent storage: ${granted ? "granted" : "denied"}`),
+      () => {}
+    );
+  } catch (e) {
+    /* no-op */
+  }
+}
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -34,7 +53,8 @@ function idbPut(db, key, value) {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put(value, key);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error("idb put failed"));
+    tx.onabort = () => reject(tx.error || new Error("idb put aborted (quota?)"));
   });
 }
 
@@ -46,24 +66,27 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
   const cacheable = /^https?:/i.test(url);
   let db = null;
   if (cacheable) {
+    requestPersist();
     try {
       db = await openDB();
     } catch (e) {
-      /* no IndexedDB → just fetch */
+      console.warn("[cache] indexedDB unavailable → network only", e);
     }
   }
 
   if (db) {
     try {
       const rec = await idbGet(db, url);
-      if (rec && rec.buf && Date.now() - rec.ts < ttlMs) {
-        if (onProgress) onProgress({ loaded: rec.buf.byteLength, total: rec.buf.byteLength });
+      if (rec && rec.blob && Date.now() - rec.ts < ttlMs) {
+        const buf = await rec.blob.arrayBuffer();
+        if (onProgress) onProgress({ loaded: buf.byteLength, total: buf.byteLength });
         const ageH = Math.round((Date.now() - rec.ts) / 3.6e6);
-        console.log(`[cache] hit ${url} (${(rec.buf.byteLength / 1e6).toFixed(1)}MB, ${ageH}h old)`);
-        return rec.buf;
+        console.log(`[cache] HIT ${url} (${(buf.byteLength / 1e6).toFixed(1)}MB, ${ageH}h old)`);
+        return buf;
       }
+      console.log(`[cache] miss ${url}`);
     } catch (e) {
-      /* fall through to network */
+      console.warn("[cache] read failed → network", e);
     }
   }
 
@@ -96,10 +119,10 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
 
   if (db) {
     try {
-      await idbPut(db, url, { ts: Date.now(), buf });
-      console.log(`[cache] stored ${url} (${(buf.byteLength / 1e6).toFixed(1)}MB)`);
+      await idbPut(db, url, { ts: Date.now(), blob: new Blob([buf]) });
+      console.log(`[cache] STORED ${url} (${(buf.byteLength / 1e6).toFixed(1)}MB)`);
     } catch (e) {
-      console.warn("[cache] store failed (quota?)", e);
+      console.warn(`[cache] store failed for ${url} (quota/eviction?)`, e);
     }
   }
   return buf;
