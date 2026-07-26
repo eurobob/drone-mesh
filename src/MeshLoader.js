@@ -78,7 +78,7 @@ export class MeshLoader {
     }
   }
 
-  async loadFromUrl(url, onProgress) {
+  async loadFromUrl(url, onProgress, onStatus) {
     const extension = url.split('.').pop().toLowerCase().split('?')[0];
     
     try {
@@ -90,7 +90,7 @@ export class MeshLoader {
           break;
         case 'gltf':
         case 'glb':
-          mesh = await this.loadGLTF(url, onProgress);
+          mesh = await this.loadGLTF(url, onProgress, onStatus);
           break;
         case 'ply':
           mesh = await this.loadPLY(url);
@@ -100,7 +100,7 @@ export class MeshLoader {
           break;
         default:
           // If no extension, assume GLB (for URLs without extensions)
-          mesh = await this.loadGLTF(url, onProgress);
+          mesh = await this.loadGLTF(url, onProgress, onStatus);
       }
 
       return mesh;
@@ -218,12 +218,12 @@ export class MeshLoader {
     });
   }
 
-  async loadGLTF(url, onProgress) {
+  async loadGLTF(url, onProgress, onStatus) {
     console.log('Starting GLTF load from URL:', url);
     // Fetch bytes through the IndexedDB cache (survives HMR reloads), then
     // parse — the GLB is self-contained (Draco decoder is set on the loader),
     // so no resource path is needed.
-    const buffer = await cachedArrayBuffer(url, onProgress);
+    const buffer = await cachedArrayBuffer(url, onProgress, undefined, onStatus);
     return new Promise((resolve, reject) => {
       this.loaders.gltf.parse(
         buffer,

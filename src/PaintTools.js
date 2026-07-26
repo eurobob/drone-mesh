@@ -36,7 +36,7 @@ export class PaintTools {
   // canvas pixel, or null if the ray misses. Used to anchor gestures to the
   // surface under the cursor so they don't also grab faces far away along the
   // same sight line (e.g. the ground seen past a roof edge).
-  constructor({ domElement, container, camera, getCandidates, onGestureStart, onGestureEnd, onApply, onBrush, pickDepth }) {
+  constructor({ domElement, container, camera, getCandidates, onGestureStart, onGestureEnd, onApply, onBrush, pickDepth, pickFace }) {
     this.domElement = domElement;
     this.camera = camera;
     this.getCandidates = getCandidates;
@@ -45,6 +45,9 @@ export class PaintTools {
     this.onApply = onApply || (() => {}); // lasso hits (map)
     this.onBrush = onBrush || (() => {}); // brush: (px, py, radiusPx)
     this.pickDepth = pickDepth || (() => null);
+    // pickFace(px, py) → { mesh, face, dist } of the FRONTMOST surface at a
+    // canvas pixel (or null). Used for exact lasso occlusion.
+    this.pickFace = pickFace || (() => null);
 
     this.tool = "tap"; // tap (off) | brush | lasso
     this.intent = "add"; // add | remove
@@ -232,17 +235,21 @@ export class PaintTools {
         const sx = (v.x * 0.5 + 0.5) * W;
         const sy = (-v.y * 0.5 + 0.5) * H;
         if (!pointInPolygon([sx, sy], g.points)) continue;
-        // Occlusion: keep only faces actually VISIBLE from here. A face hidden
-        // behind a nearer surface at its own screen pixel (the raycast line
-        // passing through a wall/roof to geometry beyond) is rejected — the
-        // lasso acts on what you can see, not everything along the sight line.
-        const front = this.pickDepth(sx, sy);
-        if (front != null) {
+        // Occlusion, EXACT: raycast this candidate's own screen pixel and keep
+        // it only if the frontmost surface there really is THIS face (or a
+        // co-planar neighbour at the same depth — covers sub-pixel rounding on
+        // a flat surface). Anything behind the frontmost hit (a face tucked
+        // behind a wall/roof along the sight line) is dropped. The lasso acts
+        // on what you can see, not everything down the ray.
+        const front = this.pickFace(sx, sy);
+        if (!front) continue; // nothing hit here → not a visible surface
+        const sameFace = front.mesh === g.meshRef[i] && front.face === g.faceIdx[i];
+        if (!sameFace) {
           const dx = g.cx[i] - cam.x;
           const dy = g.cy[i] - cam.y;
           const dz = g.cz[i] - cam.z;
           const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (d > front + Math.max(0.25, front * 0.02)) continue; // behind → hidden
+          if (d > front.dist + 0.2) continue; // behind the frontmost → hidden
         }
         this.mark(hit, g, i);
       }

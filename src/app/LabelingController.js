@@ -96,6 +96,7 @@ export class LabelingController {
       onApply: (intent, map) => app.selectionCtl.applyPaint(intent, map),
       onBrush: (px, py, radius) => app.selectionCtl.onBrush(px, py, radius),
       pickDepth: (px, py) => app.selectionCtl.pickSurfaceDepth(px, py),
+      pickFace: (px, py) => app.selectionCtl.pickSurfaceFace(px, py),
     });
     app.chrome.setupToolbar();
 

@@ -56,7 +56,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "cache-blob-lasso-2";
+const BUILD_VERSION = "lasso-exact-cache-diag-1";
 
 class MeshExplorer {
   constructor() {

@@ -253,6 +253,12 @@ export const loadingMixin = {
         lowResUrl,
         (progress) => {
           this.updateLoadingProgress(progress);
+        },
+        (status) => {
+          // Surface cache state on-screen (dev diagnostic): "cache: HIT …" on a
+          // cached reload, "miss → downloading" / "unavailable (blocked?)" else.
+          const el = document.getElementById("loading-text");
+          if (el) el.textContent = `Loading preview · cache: ${status}`;
         }
       );
 

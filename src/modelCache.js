@@ -62,7 +62,11 @@ function idbPut(db, key, value) {
 // fresh copy exists. onProgress({loaded,total}) fires while downloading (and
 // once at 100% on a cache hit). Non-http(s) URLs (blob:/data: from drag-drop)
 // bypass the cache. Any cache failure falls back to a plain network fetch.
-export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
+export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS, onStatus) {
+  const note = (s) => {
+    console.log(`[cache] ${s} ${url}`);
+    if (onStatus) onStatus(s);
+  };
   const cacheable = /^https?:/i.test(url);
   let db = null;
   if (cacheable) {
@@ -70,6 +74,7 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
     try {
       db = await openDB();
     } catch (e) {
+      note("unavailable (blocked?)");
       console.warn("[cache] indexedDB unavailable → network only", e);
     }
   }
@@ -81,11 +86,12 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
         const buf = await rec.blob.arrayBuffer();
         if (onProgress) onProgress({ loaded: buf.byteLength, total: buf.byteLength });
         const ageH = Math.round((Date.now() - rec.ts) / 3.6e6);
-        console.log(`[cache] HIT ${url} (${(buf.byteLength / 1e6).toFixed(1)}MB, ${ageH}h old)`);
+        note(`HIT (${(buf.byteLength / 1e6).toFixed(1)}MB, ${ageH}h old)`);
         return buf;
       }
-      console.log(`[cache] miss ${url}`);
+      note("miss → downloading");
     } catch (e) {
+      note("read failed → downloading");
       console.warn("[cache] read failed → network", e);
     }
   }
@@ -120,8 +126,9 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS) {
   if (db) {
     try {
       await idbPut(db, url, { ts: Date.now(), blob: new Blob([buf]) });
-      console.log(`[cache] STORED ${url} (${(buf.byteLength / 1e6).toFixed(1)}MB)`);
+      note(`STORED (${(buf.byteLength / 1e6).toFixed(1)}MB)`);
     } catch (e) {
+      note("store failed (quota?)");
       console.warn(`[cache] store failed for ${url} (quota/eviction?)`, e);
     }
   }
