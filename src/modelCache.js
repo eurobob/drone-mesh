@@ -67,7 +67,11 @@ export async function cachedArrayBuffer(url, onProgress, ttlMs = TTL_MS, onStatu
     console.log(`[cache] ${s} ${url}`);
     if (onStatus) onStatus(s);
   };
-  const cacheable = /^https?:/i.test(url);
+  // Cache everything except ephemeral object URLs (drag-drop blob:/data:).
+  // This deliberately INCLUDES same-origin relative paths like
+  // "/resources/models/coconut-low.glb" — the local dev copy, which the old
+  // http(s)-only guard silently skipped (so it never cached locally).
+  const cacheable = !/^(blob:|data:)/i.test(url);
   let db = null;
   if (cacheable) {
     requestPersist();

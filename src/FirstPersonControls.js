@@ -46,7 +46,7 @@ export class FirstPersonControls {
     // is always free — the ray only looks the way you're going).
     this.collider = null;
     this.collideRay = new THREE.Raycaster();
-    this.collideMargin = 0.4; // scene units to keep off surfaces (> near plane 0.3)
+    this.collideMargin = 0.7; // scene units to keep off surfaces (> near plane 0.3)
 
     this.velocity = new THREE.Vector3();
     this.direction = new THREE.Vector3();
