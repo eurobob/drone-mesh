@@ -2,13 +2,14 @@ import * as THREE from "three";
 import { FirstPersonControls } from "./FirstPersonControls.js";
 import { MeshLoader } from "./MeshLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { LABEL_CLASSES, CONFIDENCE_LEVELS } from "./Labels.js";
+import { LABEL_CLASSES } from "./Labels.js";
 import { ReviewMode } from "./ReviewMode.js";
 import { autoTag } from "./AutoTagger.js";
-import { PaintTools } from "./PaintTools.js";
 import { Diagnostics } from "./Diagnostics.js";
 import { hudMixin } from "./app/hud.js";
 import { loadingMixin } from "./app/loading.js";
+import { chromeMixin } from "./app/chrome.js";
+import { labelingMixin } from "./app/labeling.js";
 
 // Configuration toggle
 const ENABLE_SURFACE_SELECTION = true; // Set to true to enable surface selection
@@ -670,27 +671,7 @@ class MeshExplorer {
 
   // --- click-to-edit existing labels ----------------------------------------
 
-  enterEditLabel(label) {
-    this.editingLabelId = label.id;
-    this.labels.setOverlayVisible(label.id, false); // pending highlight replaces it
-    this.pendingHistory = [];
-    this.pending = {
-      selected: this.labels.decodeSelection(label),
-      targetClass: label.geomClass || "roof-flat",
-      clicks: 1,
-    };
-    this.refreshPending();
-    // panel opens via refreshPending; preselect the label's own values
-    this.pickClass(label.class);
-    this.pickConfidence(label.confidence);
-  }
-
-  exitEditState() {
-    if (this.editingLabelId && this.labels) {
-      this.labels.setOverlayVisible(this.editingLabelId, true);
-    }
-    this.editingLabelId = null;
-  }
+  // enterEditLabel / exitEditState live in ./app/labeling.js.
 
   cancelPendingSelection() {
     this.setIntent("add"); // erase off; keep the user's current tool
@@ -837,46 +818,7 @@ class MeshExplorer {
     this.renderLabelList();
   }
 
-  setIntent(intent) {
-    this.editIntent = intent;
-    if (this.paint) this.paint.setIntent(intent);
-    this.syncToolbar();
-  }
-
-  // Tool selection also governs the camera: tap leaves navigation free
-  // (you move between clicks); brush/lasso lock the active controller so the
-  // gesture is ours. Reset to tap whenever a selection ends.
-  setTool(tool) {
-    this.editTool = tool;
-    const painting = tool === "brush" || tool === "lasso";
-    if (this.paint) {
-      this.paint.setIntent(this.editIntent);
-      this.paint.setTool(painting ? tool : "tap");
-    }
-    // Never fully lock the camera while painting: single finger / mouse paints,
-    // but TWO fingers still navigate (and PaintTools ignores multi-touch). So
-    // paint tools coexist with nav — you don't have to switch to Move to pan.
-    if (this.mode === "review") {
-      if (this.orbit) {
-        this.orbit.enabled = true;
-        // one-finger / left-drag = paint when a tool is active (so orbit
-        // ignores them); two-finger + right/middle mouse still dolly/pan.
-        this.orbit.touches = {
-          ONE: painting ? null : THREE.TOUCH.ROTATE,
-          TWO: THREE.TOUCH.DOLLY_PAN,
-        };
-        this.orbit.mouseButtons = {
-          LEFT: painting ? null : THREE.MOUSE.ROTATE,
-          MIDDLE: THREE.MOUSE.DOLLY,
-          RIGHT: THREE.MOUSE.PAN,
-        };
-      }
-    } else if (this.controls) {
-      this.controls.enabled = true;
-      this.controls.paintMode = painting;
-    }
-    this.syncToolbar();
-  }
+  // setIntent / setTool live in ./app/chrome.js.
 
   // Apply a paint gesture's hit faces per intent (add merges, remove deletes).
   // A brush/lasso ADD with nothing selected STARTS a fresh selection, so the
@@ -1081,373 +1023,13 @@ class MeshExplorer {
 
   // Snap the camera onto the current selection from an orthogonal direction
   // so tools operate on a clean, aligned view (e.g. top-down to paint a roof).
-  focusSelection(dir) {
-    if (!this.pending || !this.pending.selected.size) return;
-    const box = new THREE.Box3();
-    const v = new THREE.Vector3();
-    for (const [mesh, faces] of this.pending.selected) {
-      const pos = mesh.geometry.getAttribute("position");
-      const index = mesh.geometry.index;
-      for (const f of faces) {
-        for (let k = 0; k < 3; k++) {
-          const idx = index ? index.getX(f * 3 + k) : f * 3 + k;
-          box.expandByPoint(v.fromBufferAttribute(pos, idx).applyMatrix4(mesh.matrixWorld));
-        }
-      }
-    }
-    if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1);
-    const fov = THREE.MathUtils.degToRad(this.camera.fov);
-    const dist = (radius / Math.tan(fov / 2)) * 1.5;
-    const axis = {
-      top: new THREE.Vector3(0.001, 1, 0.001),
-      front: new THREE.Vector3(0, 0.15, 1),
-      side: new THREE.Vector3(1, 0.15, 0),
-    }[dir] || new THREE.Vector3(0.3, 0.6, 1);
-    axis.normalize();
-    this.camera.position.copy(center).addScaledVector(axis, dist);
-    this.camera.lookAt(center);
-    if (this.mode === "review" && this.orbit) {
-      this.orbit.target.copy(center);
-    } else if (this.controls) {
-      this.controls.syncFromCamera();
-    }
-  }
-
-  // --- primary tool bar + editing chrome ------------------------------------
-
-  syncDock() { this.syncToolbar(); }
-
-  // showDock(on): on = a selection is being edited. Reveals the refine/intent
-  // tools + focus-view cluster and clears the status card out of the way.
-  showDock(on) {
-    const bar = document.getElementById("toolbar");
-    if (bar) bar.classList.toggle("editing", on);
-    const fg = document.getElementById("focus-group");
-    if (fg) {
-      fg.classList.toggle("visible", on);
-      if (!on) fg.classList.remove("open");
-    }
-    const card = document.getElementById("labels-card");
-    if (card) {
-      if (on) card.classList.remove("active");
-      else if (this.mode === "explore" && this.labels) card.classList.add("active");
-    }
-    this.syncToolbar();
-  }
-
-  showToolbar(on) {
-    const bar = document.getElementById("toolbar");
-    if (bar) bar.classList.toggle("visible", on);
-  }
-
-  syncToolbar() {
-    const bar = document.getElementById("toolbar");
-    if (!bar) return;
-    bar.querySelectorAll("[data-tool]").forEach((b) =>
-      b.classList.toggle("active", b.dataset.tool === this.editTool)
-    );
-    // Erase = the remove intent, shown as an on/off modifier (not a tool).
-    const erasing = this.editIntent === "remove";
-    bar.classList.toggle("erasing", erasing);
-    const erase = document.getElementById("tb-erase");
-    if (erase) erase.classList.toggle("active", erasing);
-    const undo = document.getElementById("tb-undo");
-    if (undo) undo.disabled = this.pendingHistory.length === 0;
-  }
-
-  setupToolbar() {
-    const bar = document.getElementById("toolbar");
-    if (!bar) return;
-    bar.querySelectorAll("[data-tool]").forEach((b) =>
-      b.addEventListener("click", () => this.setTool(b.dataset.tool))
-    );
-    document.getElementById("tb-erase").addEventListener("click", () =>
-      this.setIntent(this.editIntent === "add" ? "remove" : "add")
-    );
-    document.getElementById("tb-undo").addEventListener("click", () => this.undoPending());
-    document.getElementById("tb-grow").addEventListener("click", () => this.growPending());
-    document.getElementById("tb-shrink").addEventListener("click", () => this.shrinkPending());
-
-    // top-left: focus-view cluster (single icon → expandable menu) + info
-    const focusGroup = document.getElementById("focus-group");
-    document.getElementById("focus-toggle").addEventListener("click", () =>
-      focusGroup.classList.toggle("open")
-    );
-    document.querySelectorAll("#focus-group [data-view3d]").forEach((b) =>
-      b.addEventListener("click", () => {
-        this.focusSelection(b.dataset.view3d);
-        focusGroup.classList.remove("open"); // collapse after picking an angle
-      })
-    );
-    document.getElementById("btn-info").addEventListener("click", () =>
-      document.getElementById("info").classList.toggle("active")
-    );
-
-    // review: reveal/hide the editing tools for the current item
-    document.getElementById("ra-adjust").addEventListener("click", () =>
-      this.setReviewAdjusting(!this.reviewAdjusting)
-    );
-
-    // top-center: Explore / Review
-    document.getElementById("mode-explore").addEventListener("click", () => {
-      if (this.mode === "review" && this.review) this.review.exit();
-    });
-    document.getElementById("mode-review").addEventListener("click", () => {
-      if (this.mode === "explore") this.enterReviewMode();
-    });
-
-    // top-right: tucked utilities menu
-    const menu = document.getElementById("labels-menu");
-    document.getElementById("labels-menu-btn").addEventListener("click", () =>
-      menu.classList.toggle("open")
-    );
-  }
-
-  syncModeToggle() {
-    const ex = document.getElementById("mode-explore");
-    const rv = document.getElementById("mode-review");
-    if (ex) ex.classList.toggle("active", this.mode === "explore");
-    if (rv) rv.classList.toggle("active", this.mode === "review");
-  }
+  // focusSelection + tool-bar/editing chrome (syncDock, showDock, showToolbar,
+  // syncToolbar, setupToolbar, syncModeToggle) live in ./app/chrome.js.
 
   // --- labeling UI -----------------------------------------------------------
 
-  initLabelUI() {
-    this.ui = {
-      panel: document.getElementById("label-panel"),
-      summary: document.getElementById("lp-summary"),
-      classGrid: document.getElementById("lp-classgrid"),
-      classPill: document.getElementById("lp-class"),
-      classDot: document.getElementById("lp-class-dot"),
-      className: document.getElementById("lp-class-name"),
-      confBtn: document.getElementById("lp-conf"),
-      confDot: document.getElementById("lp-conf-dot"),
-      confName: document.getElementById("lp-conf-name"),
-      deleteBtn: document.getElementById("lp-delete"),
-      save: document.getElementById("lp-save"),
-      cancel: document.getElementById("lp-cancel"),
-      card: document.getElementById("labels-card"),
-      count: document.getElementById("labels-count"),
-      export: document.getElementById("labels-export"),
-      clear: document.getElementById("labels-clear"),
-      autoBtn: document.getElementById("labels-auto"),
-    };
-    this.pickedClass = null;
-    this.pickedConfidence = "confirmed";
-
-    // class picker lives in a popover; the pill in the bar opens it
-    for (const cls of LABEL_CLASSES) {
-      const b = document.createElement("button");
-      b.className = "class-btn";
-      b.dataset.cls = cls.id;
-      b.style.setProperty("--chip", cls.color);
-      b.textContent = cls.name;
-      b.addEventListener("click", () => {
-        this.pickClass(cls.id);
-        this.ui.classGrid.classList.remove("open");
-      });
-      this.ui.classGrid.appendChild(b);
-    }
-    this.ui.classPill.addEventListener("click", () =>
-      this.ui.classGrid.classList.toggle("open")
-    );
-    // confidence is a single pill that cycles confirmed → unsure → flagged
-    this.ui.confBtn.addEventListener("click", () => {
-      const order = CONFIDENCE_LEVELS.map((c) => c.id);
-      const i = order.indexOf(this.pickedConfidence);
-      this.pickConfidence(order[(i + 1) % order.length]);
-    });
-
-    // Paint tools: lasso (mouse) / brush (touch), add OR remove per intent.
-    // Reads candidates live and applies hits through applyPaint.
-    this.paint = new PaintTools({
-      domElement: this.renderer.domElement,
-      container: document.getElementById("canvas-container"),
-      camera: this.camera,
-      getCandidates: (intent) => this.paintCandidates(intent),
-      onGestureStart: () => this.pushPendingHistory(),
-      onApply: (intent, map) => this.applyPaint(intent, map),
-      onBrush: (px, py, radius) => this.onBrush(px, py, radius),
-      pickDepth: (px, py) => this.pickSurfaceDepth(px, py),
-    });
-    this.setupToolbar();
-
-    this.ui.deleteBtn.addEventListener("click", () => {
-      if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
-        const id = this.editingLabelId;
-        this.editingLabelId = null; // overlay is going away — skip restore
-        this.labels.remove(id);
-        this.cancelPendingSelection();
-        this.renderLabelList();
-      }
-    });
-
-    // review-sheet controls that live outside ReviewMode's own bindings
-    const bindTool = (id, fn) => document.getElementById(id).addEventListener("click", fn);
-    bindTool("ra-discard", () => this.cancelPendingSelection());
-    bindTool("ra-delete", () => {
-      if (!this.editingLabelId || !this.labels) return;
-      if (!confirm("Delete this label?")) return;
-      const id = this.editingLabelId;
-      this.editingLabelId = null; // gone — no overlay to restore
-      this.pending = null;
-      this.pendingDirty = false;
-      if (this.selector) this.selector.clearHighlight();
-      this.labels.remove(id);
-      if (this.review) this.review.removeCurrentItem();
-      this.renderLabelList();
-    });
-    this.ui.save.addEventListener("click", () => this.saveLabel());
-    this.ui.cancel.addEventListener("click", () => this.cancelPendingSelection());
-    this.ui.autoBtn.addEventListener("click", () => {
-      document.getElementById("labels-menu").classList.remove("open");
-      this.runAutoTag();
-    });
-    this.ui.export.addEventListener("click", () => {
-      document.getElementById("labels-menu").classList.remove("open");
-      if (this.labels) this.labels.exportDownload();
-    });
-    this.ui.clear.addEventListener("click", () => {
-      document.getElementById("labels-menu").classList.remove("open");
-      if (this.labels && confirm("Delete all labels for this map?")) {
-        this.labels.clearAll();
-        this.renderLabelList();
-      }
-    });
-    // View switcher: overlays default OFF (clean mesh); user opts into a view.
-    this.viewMode = "hidden";
-    this.isolatedClass = null;
-    document.getElementById("view-modes").addEventListener("click", (event) => {
-      const btn = event.target.closest(".view-btn");
-      if (!btn) return;
-      this.viewMode = btn.dataset.view;
-      this.isolatedClass = null;
-      this.syncViewUI();
-      if (this.labels) {
-        this.labels.applyView({ mode: this.viewMode, classId: null });
-      }
-    });
-    const classRow = document.getElementById("view-classes");
-    for (const cls of LABEL_CLASSES) {
-      const b = document.createElement("button");
-      b.className = "class-dot-btn";
-      b.title = `Show only ${cls.name}`;
-      b.dataset.cls = cls.id;
-      b.style.background = cls.color;
-      b.addEventListener("click", () => {
-        this.isolatedClass = this.isolatedClass === cls.id ? null : cls.id;
-        this.syncViewUI();
-        if (this.labels) {
-          this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
-        }
-      });
-      classRow.appendChild(b);
-    }
-  }
-
-  syncViewUI() {
-    for (const b of document.getElementById("view-modes").children) {
-      b.classList.toggle(
-        "active",
-        !this.isolatedClass && b.dataset.view === this.viewMode
-      );
-    }
-    for (const b of document.getElementById("view-classes").children) {
-      b.classList.toggle("active", b.dataset.cls === this.isolatedClass);
-    }
-  }
-
-  pickClass(id) {
-    this.pickedClass = id;
-    const cls = LABEL_CLASSES.find((c) => c.id === id);
-    if (this.ui.classDot) this.ui.classDot.style.background = cls ? cls.color : "#fff";
-    if (this.ui.className) this.ui.className.textContent = cls ? cls.name : id;
-    for (const b of this.ui.classGrid.children) {
-      b.classList.toggle("active", b.dataset.cls === id);
-    }
-  }
-
-  pickConfidence(id) {
-    this.pickedConfidence = id;
-    const conf = CONFIDENCE_LEVELS.find((c) => c.id === id);
-    if (this.ui.confDot) this.ui.confDot.style.background = conf ? conf.color : "#fff";
-    if (this.ui.confName) this.ui.confName.textContent = conf ? conf.name : id;
-  }
-
-  showLabelPanel() {
-    if (!this.ui || !this.pending) return;
-    const p = this.pending;
-    const editing = !!this.editingLabelId;
-    this.ui.summary.textContent = `${p.faceCount.toLocaleString()} faces`;
-    // Preselect the suggested class on a fresh selection; keep the user's
-    // picks while they refine or edit an existing label.
-    if (p.clicks === 1 && !editing) {
-      this.pickClass(p.suggested);
-      this.pickConfidence("confirmed");
-    }
-    this.ui.deleteBtn.style.display = editing ? "" : "none";
-    this.ui.save.textContent = editing ? "Update" : "Save";
-    this.ui.classGrid.classList.remove("open"); // bar first; picker on demand
-    this.ui.panel.classList.add("active");
-    this.showDock(true);
-  }
-
-  saveLabel() {
-    if (!this.pending || !this.labels || !this.pickedClass) return;
-    const wasEditing = !!this.editingLabelId;
-    if (wasEditing) {
-      this.labels.update(this.editingLabelId, {
-        selected: this.pending.selected,
-        classId: this.pickedClass,
-        confidence: this.pickedConfidence,
-      });
-      this.editingLabelId = null; // updated overlay repaints visible
-    } else {
-      this.labels.add({
-        selected: this.pending.selected,
-        classId: this.pickedClass,
-        confidence: this.pickedConfidence,
-        suggested: this.pending.suggested,
-        targetClass: this.pending.targetClass,
-      });
-    }
-    this.cancelPendingSelection();
-    // Reveal what was just tagged: if overlays are hidden, flip to Tagged so
-    // the new label is visible (don't override a filter the user chose).
-    if (this.mode === "explore" && this.viewMode === "hidden") {
-      this.viewMode = "all";
-      this.syncViewUI();
-    }
-    this.renderLabelList();
-  }
-
-  // The status card is now just a count + coverage + view filters (the big
-  // per-label list is gone — it's noise during tagging). Mode toggle owns the
-  // Explore/Review switch, so no Review button here.
-  renderLabelList() {
-    if (!this.ui || !this.labels) return;
-    if (this.mode === "review") return; // review owns overlay visibility
-    this.ui.card.classList.toggle("active", !this.pending);
-    const labels = this.labels.list;
-    this.ui.count.textContent = `${labels.length} label${labels.length === 1 ? "" : "s"}`;
-    this.labels.applyView({ mode: this.viewMode, classId: this.isolatedClass });
-    const covEl = document.getElementById("labels-coverage");
-    if (labels.length) {
-      const compute = () => {
-        covEl.textContent = `${this.labels.coverage().toFixed(0)}% covered`;
-      };
-      if (window.requestIdleCallback) requestIdleCallback(compute);
-      else setTimeout(compute, 50);
-    } else {
-      covEl.textContent = "";
-    }
-    // Review is only reachable with something to review.
-    const rv = document.getElementById("mode-review");
-    if (rv) rv.disabled = !labels.length;
-    this.syncModeToggle();
-  }
+  // Labeling UI (initLabelUI, syncViewUI, pickClass, pickConfidence,
+  // showLabelPanel, saveLabel, renderLabelList) lives in ./app/labeling.js.
 
   updateControlsInfo() {
     const infoDiv = document.getElementById("info");
@@ -1560,6 +1142,12 @@ class MeshExplorer {
 // Compose topical method groups onto the prototype. Each mixin's methods run
 // with the app instance as `this`; grouping keeps main.js navigable while the
 // single runtime context is preserved (see ./app/*).
-Object.assign(MeshExplorer.prototype, hudMixin, loadingMixin);
+Object.assign(
+  MeshExplorer.prototype,
+  hudMixin,
+  loadingMixin,
+  chromeMixin,
+  labelingMixin
+);
 
 new MeshExplorer();
