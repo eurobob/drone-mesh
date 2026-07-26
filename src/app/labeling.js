@@ -86,7 +86,7 @@ export const labelingMixin = {
       onBrush: (px, py, radius) => this.onBrush(px, py, radius),
       pickDepth: (px, py) => this.pickSurfaceDepth(px, py),
     });
-    this.setupToolbar();
+    this.chrome.setupToolbar();
 
     this.ui.deleteBtn.addEventListener("click", () => {
       if (this.editingLabelId && this.labels && confirm("Delete this label?")) {
@@ -205,7 +205,7 @@ export const labelingMixin = {
     this.ui.save.textContent = editing ? "Update" : "Save";
     this.ui.classGrid.classList.remove("open"); // bar first; picker on demand
     this.ui.panel.classList.add("active");
-    this.showDock(true);
+    this.chrome.showDock(true);
   },
 
   saveLabel() {
@@ -260,6 +260,6 @@ export const labelingMixin = {
     // Review is only reachable with something to review.
     const rv = document.getElementById("mode-review");
     if (rv) rv.disabled = !labels.length;
-    this.syncModeToggle();
+    this.chrome.syncModeToggle();
   },
 };

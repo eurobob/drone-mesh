@@ -56,15 +56,15 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
 {
   const { app } = makeApp({ editTool: "navigate" });
 
-  app.setIntent("remove");
-  assert(app.editIntent === "remove", "setIntent updates intent");
+  app.chrome.setIntent("remove");
+  assert(app.chrome.editIntent === "remove", "setIntent updates intent");
   assert(
     document.getElementById("toolbar").classList.contains("erasing"),
     "erase modifier reflected on the tool bar"
   );
 
-  app.setTool("brush");
-  assert(app.editTool === "brush", "setTool updates the active tool");
+  app.chrome.setTool("brush");
+  assert(app.chrome.editTool === "brush", "setTool updates the active tool");
   assert(app.controls.paintMode === true, "brush locks the camera controller into paint mode");
   assert(
     document.querySelector('[data-tool="brush"]').classList.contains("active"),
@@ -146,7 +146,7 @@ import { makeApp, wholeQuad, assert } from "./harness.mjs";
   app.camera.position.set(0.5, 5, 0.5);
   app.camera.lookAt(0.5, 0, 0.5); // straight down onto the fixture quad
   app.camera.updateMatrixWorld(true);
-  app.editIntent = "add";
+  app.chrome.editIntent = "add";
 
   app.onBrush(400, 300, 40); // canvas centre → NDC (0,0) → ray hits the quad
   assert(app.pending && app.pending.faceCount >= 1, "brush at a surface starts a pending selection");

@@ -5,7 +5,7 @@ import { autoTag } from "./AutoTagger.js";
 import { Diagnostics } from "./Diagnostics.js";
 import { hudMixin } from "./app/hud.js";
 import { loadingMixin } from "./app/loading.js";
-import { chromeMixin } from "./app/chrome.js";
+import { ChromeController } from "./app/ChromeController.js";
 import { labelingMixin } from "./app/labeling.js";
 import { selectionMixin } from "./app/selection.js";
 import { reviewMixin } from "./app/review.js";
@@ -94,20 +94,16 @@ class MeshExplorer {
     this.orbit = null;
     this.review = null;
 
-    // Selection refinement state: subtract mode, undo history (snapshots of
-    // the pending face map, capped), and the label being edited in place.
-    // Editing model: two orthogonal axes. Intent = what a gesture does
-    // (add / remove); Tool = how you point (tap / brush / lasso). Tap uses
-    // the flood-fill click path; brush/lasso hand off to PaintTools. Both
-    // tools honor the current intent, so lasso/brush can add OR remove.
-    this.editIntent = "add";
-    // navigate = camera only (no tagging); tap/brush/lasso = tagging tools.
-    // Default to navigate so a tap never tags by accident — the user opts in
-    // by picking a tool from the bar.
-    this.editTool = "navigate";
+    // Selection refinement state: undo history (snapshots of the pending face
+    // map, capped) and the label being edited in place. The editing model's
+    // two axes — intent (add/remove) × tool (navigate/tap/brush/lasso) — are
+    // owned by ChromeController now; read via this.chrome.editIntent/.editTool.
     this.paint = null;
     this.pendingHistory = [];
     this.editingLabelId = null;
+
+    // Tool bar + editing chrome, first of the app-as-coordinator controllers.
+    this.chrome = new ChromeController(this);
 
     this.init();
     this.setupEventListeners();
@@ -468,7 +464,6 @@ Object.assign(
   MeshExplorer.prototype,
   hudMixin,
   loadingMixin,
-  chromeMixin,
   labelingMixin,
   selectionMixin,
   reviewMixin

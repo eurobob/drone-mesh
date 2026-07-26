@@ -232,7 +232,7 @@ export const loadingMixin = {
         mapKey: `${url}#raw`,
       });
       this.labels.restore();
-      this.showToolbar(true);
+      this.chrome.showToolbar(true);
       this.renderLabelList();
     } catch (err) {
       this.hideLoading();
@@ -269,7 +269,7 @@ export const loadingMixin = {
       });
       const restored = this.labels.restore();
       if (restored) console.log(`Restored ${restored} saved labels`);
-      this.showToolbar(true);
+      this.chrome.showToolbar(true);
       this.renderLabelList();
 
       // NO automatic pre-warm: the adjacency build (incl. one long synchronous

@@ -43,13 +43,13 @@ export const reviewMixin = {
     document.body.classList.toggle("adjusting", on);
     const btn = document.getElementById("ra-adjust");
     if (btn) btn.classList.toggle("active", on);
-    this.showToolbar(on);
-    this.showDock(on);
-    if (!on) this.setTool("navigate"); // leaving adjust returns to orbit-only
+    this.chrome.showToolbar(on);
+    this.chrome.showDock(on);
+    if (!on) this.chrome.setTool("navigate"); // leaving adjust returns to orbit-only
   },
 
   quietDisarm() {
-    this.setIntent("add"); // erase off for the next item; keep current tool
+    this.chrome.setIntent("add"); // erase off for the next item; keep current tool
     if (this.controls && this.controls.orbitTarget) {
       this.controls.orbitTarget = null;
       this.controls.syncFromCamera();
@@ -63,7 +63,7 @@ export const reviewMixin = {
     this.pendingHistory = [];
     this.pendingDirty = false;
     if (this.selector) this.selector.clearHighlight();
-    this.showDock(false);
+    this.chrome.showDock(false);
   },
 
   updateReviewSheet() {
@@ -75,7 +75,7 @@ export const reviewMixin = {
     ui.flag.style.display = dirty ? "none" : "";
     ui.skip.style.display = dirty ? "none" : "";
     ui.correct.textContent = dirty ? "✓ Save changes" : "✓ Confirm";
-    this.syncDock();
+    this.chrome.syncDock();
     const cls = LABEL_CLASSES.find((c) => c.id === this.pickedClass);
     if (cls) {
       ui.klass.textContent = cls.name;
@@ -161,7 +161,7 @@ export const reviewMixin = {
     document.body.classList.add("review-mode"); // raises the tool bar above the verbs
     this.controls.enabled = false;
     this.orbit.enabled = true;
-    this.setTool("navigate"); // orbit to inspect; pick a tool to adjust
+    this.chrome.setTool("navigate"); // orbit to inspect; pick a tool to adjust
     // Seed the orbit target with the current view direction so the first
     // frame doesn't snap toward a stale target.
     const dir = new THREE.Vector3();
@@ -170,8 +170,8 @@ export const reviewMixin = {
 
     this.ui.card.classList.remove("active");
     document.getElementById("info").classList.remove("active");
-    this.showToolbar(false); // tools stay hidden until Adjust
-    this.syncModeToggle();
+    this.chrome.showToolbar(false); // tools stay hidden until Adjust
+    this.chrome.syncModeToggle();
 
     if (!this.review.enter()) this.handleReviewExit();
   },
@@ -185,9 +185,9 @@ export const reviewMixin = {
     if (this.orbit) this.orbit.enabled = false;
     this.controls.enabled = true;
     this.controls.syncFromCamera();
-    this.setTool("navigate"); // resets FP paintMode for explore
-    this.showToolbar(true);
-    this.syncModeToggle();
+    this.chrome.setTool("navigate"); // resets FP paintMode for explore
+    this.chrome.showToolbar(true);
+    this.chrome.syncModeToggle();
     this.renderLabelList();
   },
 };

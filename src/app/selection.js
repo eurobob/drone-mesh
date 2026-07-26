@@ -107,7 +107,7 @@ export const selectionMixin = {
   },
 
   handleSurfaceSelection(clientX, clientY, rawMods = {}) {
-    if (this.editTool !== "tap") return; // brush/lasso own the pointer
+    if (this.chrome.editTool !== "tap") return; // brush/lasso own the pointer
     const adjusting = this.mode === "review" && this.reviewAdjust;
     if (this.mode !== "explore" && !adjusting) return;
     if (!this.currentMesh || !this.selector) return;
@@ -117,8 +117,8 @@ export const selectionMixin = {
     // selection with tap defaults to the intent; a first tap always starts
     // fresh. In review adjust, a bare tap must never abandon the item.
     const mods = {
-      add: rawMods.add || (!rawMods.sub && this.editIntent === "add"),
-      sub: rawMods.sub || (!rawMods.add && this.editIntent === "remove"),
+      add: rawMods.add || (!rawMods.sub && this.chrome.editIntent === "add"),
+      sub: rawMods.sub || (!rawMods.add && this.chrome.editIntent === "remove"),
     };
     if (adjusting && !this.pending) return; // shouldn't happen; guard
 
@@ -209,7 +209,7 @@ export const selectionMixin = {
       // in explore, drag now orbits around the live selection
       if (this.controls) this.controls.orbitTarget = this.selectionCenter();
     }
-    this.syncDock();
+    this.chrome.syncDock();
   },
 
   // World-space centroid of the pending selection (sampled), for orbit + focus.
@@ -268,7 +268,7 @@ export const selectionMixin = {
   },
 
   cancelPendingSelection() {
-    this.setIntent("add"); // erase off; keep the user's current tool
+    this.chrome.setIntent("add"); // erase off; keep the user's current tool
     if (this.controls && this.controls.orbitTarget) {
       this.controls.orbitTarget = null; // back to free look
       this.controls.syncFromCamera(); // adopt current orientation (no snap)
@@ -282,7 +282,7 @@ export const selectionMixin = {
     this.pending = null;
     this.pendingHistory = [];
     if (this.selector) this.selector.clearHighlight();
-    this.showDock(false);
+    this.chrome.showDock(false);
     if (this.ui) this.ui.panel.classList.remove("active");
   },
 
@@ -360,7 +360,7 @@ export const selectionMixin = {
     if (!this.currentMesh || !this.selector) return;
     const hit = this.pickSurfaceFace(px, py);
 
-    if (this.editIntent === "remove") {
+    if (this.chrome.editIntent === "remove") {
       if (!this.pending || !hit) return;
       // remove the connected patch of the pending selection under the cursor
       const rm = this.selector.floodFromFace(

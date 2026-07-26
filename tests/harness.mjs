@@ -9,7 +9,7 @@ import { JSDOM } from "jsdom";
 import * as THREE from "three";
 import { SurfaceSelector } from "../src/SurfaceSelector.js";
 import { LabelManager } from "../src/Labels.js";
-import { chromeMixin } from "../src/app/chrome.js";
+import { ChromeController } from "../src/app/ChromeController.js";
 import { labelingMixin } from "../src/app/labeling.js";
 import { selectionMixin } from "../src/app/selection.js";
 import { reviewMixin } from "../src/app/review.js";
@@ -103,8 +103,6 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       mouse: new THREE.Vector2(),
       pending: null,
       mode,
-      editIntent: "add",
-      editTool,
       pendingHistory: [],
       editingLabelId: null,
       review: null,
@@ -117,11 +115,15 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       viewMode: "hidden",
       isolatedClass: null,
     },
-    chromeMixin,
     labelingMixin,
     selectionMixin,
     reviewMixin
   );
+
+  // Chrome is a controller (owns tool/intent), not a mixin — create before the
+  // UI wiring, which calls this.chrome.setupToolbar().
+  app.chrome = new ChromeController(app);
+  app.chrome.editTool = editTool;
 
   // Real UI wiring (creates app.ui + app.paint via PaintTools, binds the bar).
   app.initLabelUI();
