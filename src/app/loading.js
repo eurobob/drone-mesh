@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { SurfaceSelector } from "../SurfaceSelector.js";
 import { LabelManager } from "../Labels.js";
 import { HighResStreamer } from "../HighResStreamer.js";
+import { buildBoundsTrees, disposeBoundsTrees } from "./bvh.js";
 
 // Mesh acquisition + setup: the loading overlay, source selection (local vs
 // CDN), the three load paths (drag-drop files, ground-truth raw high-res,
@@ -38,6 +39,7 @@ export const loadingMixin = {
   // lost (blank screen / mobile tab reload).
   disposeObject(obj) {
     if (!obj) return;
+    disposeBoundsTrees(obj); // free BVH memory before the geometry goes
     obj.traverse((child) => {
       if (!child.isMesh) return;
       if (child.geometry) child.geometry.dispose();
@@ -426,6 +428,10 @@ export const loadingMixin = {
     this.scene.add(mesh);
     this.currentMesh = mesh;
     if (this.controls) this.controls.collider = mesh; // nav collision target
+    // Accelerate all raycasts against this mesh (collision, select, brush,
+    // lasso). Index-preserving so saved face indices stay valid.
+    buildBoundsTrees(mesh);
+    logTiming("BVH build");
     logTiming("Added to scene");
 
     // Force render

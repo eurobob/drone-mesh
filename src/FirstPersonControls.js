@@ -40,7 +40,6 @@ export class FirstPersonControls {
     this.lastPinchDistance = 0;
     this.lastTwoFingerCenter = { x: 0, y: 0 };
     this.lastThreeFingerCenter = { x: 0, y: 0 };
-    this.lastTwoFingerAngle = null; // finger-line angle, for twist-to-rotate
 
     // Collision: host assigns the current mesh; navigation is then clamped so
     // the camera can't cross geometry in the direction of travel (retreating
@@ -181,7 +180,6 @@ export class FirstPersonControls {
       this.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
       this.lastTwoFingerCenter.x = (a[0].x + a[1].x) / 2;
       this.lastTwoFingerCenter.y = (a[0].y + a[1].y) / 2;
-      this.lastTwoFingerAngle = Math.atan2(dy, dx);
     }
   }
 
@@ -225,7 +223,6 @@ export class FirstPersonControls {
     const cx = (a[0].x + a[1].x) / 2;
     const cy = (a[0].y + a[1].y) / 2;
 
-    const angle = Math.atan2(a[0].y - a[1].y, a[0].x - a[1].x);
     if (this.lastPinchDistance > 0) {
       const forward = new THREE.Vector3();
       this.camera.getWorldDirection(forward);
@@ -238,19 +235,10 @@ export class FirstPersonControls {
       const panDelta = right.multiplyScalar(-panX * 0.025);
       panDelta.y += panY * 0.025;
       this.moveBy(panDelta);
-      // twist the two fingers: rotate heading (yaw). Free-roam only — in orbit
-      // mode the two-finger gesture is grab-the-world pan around the selection.
-      if (this.lastTwoFingerAngle != null && !this.orbitTarget) {
-        let dA = angle - this.lastTwoFingerAngle;
-        if (dA > Math.PI) dA -= 2 * Math.PI;
-        else if (dA < -Math.PI) dA += 2 * Math.PI;
-        this.lon += THREE.MathUtils.radToDeg(dA);
-      }
     }
     this.lastPinchDistance = dist;
     this.lastTwoFingerCenter.x = cx;
     this.lastTwoFingerCenter.y = cy;
-    this.lastTwoFingerAngle = angle;
   }
 
   onTouchEnd(event) {
@@ -267,7 +255,6 @@ export class FirstPersonControls {
       this.moveForward = false;
       this.moveBackward = false;
       this.lastPinchDistance = 0;
-      this.lastTwoFingerAngle = null;
     }
   }
 

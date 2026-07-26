@@ -49,46 +49,4 @@ function makeControls() {
   assert(camera.position.z === -10, "no collider → move is unclamped");
 }
 
-// --- two-finger twist rotates heading (yaw / lon) --------------------------
-{
-  const { fpc } = makeControls();
-  fpc.orbitTarget = null;
-  fpc.lon = 0;
-  const pd = () => {};
-  // two fingers down (horizontal line)
-  fpc.onTouchStart({
-    preventDefault: pd,
-    changedTouches: [
-      { identifier: 1, clientX: 100, clientY: 200 },
-      { identifier: 2, clientX: 300, clientY: 200 },
-    ],
-  });
-  // twist: swing the second finger up so the finger-line angle changes
-  fpc.onTouchMove({
-    preventDefault: pd,
-    changedTouches: [{ identifier: 2, clientX: 300, clientY: 120 }],
-  });
-  assert(fpc.lon !== 0, `twisting two fingers rotates heading (lon=${fpc.lon.toFixed(1)}°)`);
-}
-
-// --- twist is suppressed in orbit mode (grab-world pan owns two fingers) ----
-{
-  const { fpc } = makeControls();
-  fpc.orbitTarget = new THREE.Vector3(0, 0, -5);
-  fpc.lon = 0;
-  const pd = () => {};
-  fpc.onTouchStart({
-    preventDefault: pd,
-    changedTouches: [
-      { identifier: 1, clientX: 100, clientY: 200 },
-      { identifier: 2, clientX: 300, clientY: 200 },
-    ],
-  });
-  fpc.onTouchMove({
-    preventDefault: pd,
-    changedTouches: [{ identifier: 2, clientX: 300, clientY: 120 }],
-  });
-  assert(fpc.lon === 0, "twist does not change lon in orbit mode");
-}
-
 console.log("\nAll controls tests passed.");
