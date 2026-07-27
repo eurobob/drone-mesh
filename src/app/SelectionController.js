@@ -214,6 +214,7 @@ export class SelectionController {
       this.app.labelingCtl.showLabelPanel();
       // in explore, drag now orbits around the live selection
       if (this.app.controls) this.app.controls.orbitTarget = this.selectionCenter();
+      this.app.updateInspector();
     }
     this.app.chrome.syncDock();
   }
@@ -290,6 +291,7 @@ export class SelectionController {
     if (this.app.selector) this.app.selector.clearHighlight();
     this.app.chrome.showDock(false);
     if (this.app.labelingCtl.ui) this.app.labelingCtl.ui.panel.classList.remove("active");
+    this.app.updateInspector();
   }
 
   applyPaint(intent, map) {

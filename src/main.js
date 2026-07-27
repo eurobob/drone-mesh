@@ -5,6 +5,7 @@ import { autoTag } from "./AutoTagger.js";
 import { Diagnostics } from "./Diagnostics.js";
 import { hudMixin } from "./app/hud.js";
 import { loadingMixin } from "./app/loading.js";
+import { inspectMixin } from "./app/inspect.js";
 import { ChromeController } from "./app/ChromeController.js";
 import { ReviewController } from "./app/ReviewController.js";
 import { LabelingController } from "./app/LabelingController.js";
@@ -56,7 +57,7 @@ const LOD_UPDATE_INTERVAL = 12; // frames between LOD re-evaluations
 // Bump on every meaningful change. Shown in the info panel and logged at startup
 // so it's possible to confirm the live preview is actually running current code
 // (vs a stale cached bundle).
-const BUILD_VERSION = "cache-local-fix-1";
+const BUILD_VERSION = "terrain-inspector-1";
 
 class MeshExplorer {
   constructor() {
@@ -101,6 +102,12 @@ class MeshExplorer {
     this.paint = null;
     this.pendingHistory = [];
     this.editingLabelId = null;
+
+    // Explore classifier inspector (see app/inspect.js): tapping a surface
+    // shows the class auto-tag would assign it, with its reasoning. The
+    // bare-earth terrain (DTM) it needs is built lazily on first tap + cached.
+    this.inspectMode = true;
+    this.terrain = null;
 
     // App-as-coordinator controllers (own their slice of state; reach `this`
     // for shared state). reviewCtl coordinates the ReviewMode engine (this.review).
@@ -468,6 +475,7 @@ Object.assign(
   MeshExplorer.prototype,
   hudMixin,
   loadingMixin,
+  inspectMixin,
 );
 
 new MeshExplorer();

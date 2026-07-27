@@ -440,6 +440,33 @@
     }
     #focus-group.open #focus-menu { display: flex; }
     #focus-toggle { font-size: 18px; }
+    /* classifier inspector card (top-left, explore only) */
+    #inspect {
+      display: none;
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: var(--radius-s);
+      box-shadow: var(--shadow);
+      padding: 8px 10px;
+      font-size: 11px;
+      width: 190px;
+      box-sizing: border-box;
+    }
+    #inspect.active { display: block; }
+    .insp-title {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--ink-soft); margin-bottom: 5px;
+    }
+    .insp-row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+    .insp-row span { color: var(--ink-soft); }
+    .insp-row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+    .insp-result {
+      display: flex; align-items: center; gap: 7px;
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line);
+      font-size: 15px; font-weight: 700;
+    }
+    .insp-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+    #labels-inspect.on { background: var(--ink); border-color: var(--ink); color: #fff; }
     .fg-label {
       font-size: 9px;
       font-weight: 700;
@@ -691,6 +718,14 @@
         <button class="focus-btn" data-view3d="reset">¾</button>
       </div>
     </div>
+    <!-- classifier inspector: what auto-tag would call the tapped surface -->
+    <div id="inspect">
+      <div class="insp-title">Classifier</div>
+      <div class="insp-row"><span>geom</span><b id="insp-geom">—</b></div>
+      <div class="insp-row"><span>terrain</span><b id="insp-terrain">—</b></div>
+      <div class="insp-row"><span>colour</span><b id="insp-colour">—</b></div>
+      <div class="insp-result"><span class="insp-dot" id="insp-dot"></span><b id="insp-class">—</b></div>
+    </div>
   </div>
 
   <!-- top-center: mode -->
@@ -740,6 +775,7 @@
       <div class="menu-section">Map</div>
       <button id="labels-export">⬇ Export JSON</button>
       <button id="labels-auto">✨ Auto-tag map</button>
+      <button id="labels-inspect">🔍 Inspect classifier on tap</button>
       <button id="labels-clear" class="danger-text">Clear all labels</button>
     </div>
   </div>

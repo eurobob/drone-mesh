@@ -1,4 +1,6 @@
+import * as THREE from "three";
 import { worldArea } from "./Labels.js";
+import { Terrain } from "./Terrain.js";
 
 // Tier-0 auto-tagging: segment the whole mesh into coherent surface regions
 // using the same flood fill as manual selection, classify each region with
@@ -39,6 +41,64 @@ function isGreenish(c) {
   return c && c[1] > c[0] * 1.12 && c[1] > c[2] * 1.12;
 }
 
+// Mean height of a region's faces above the local terrain (nDSM). Sampled —
+// a couple hundred faces is plenty to tell ground from an elevated roof.
+function meanHeightAbove(terrain, selected) {
+  const v = new THREE.Vector3();
+  let sum = 0;
+  let n = 0;
+  outer: for (const [mesh, faces] of selected) {
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.index;
+    for (const f of faces) {
+      let x = 0;
+      let y = 0;
+      let z = 0;
+      for (let k = 0; k < 3; k++) {
+        const vi = index ? index.getX(f * 3 + k) : f * 3 + k;
+        v.fromBufferAttribute(pos, vi).applyMatrix4(mesh.matrixWorld);
+        x += v.x;
+        y += v.y;
+        z += v.z;
+      }
+      sum += y / 3 - terrain.heightAt(x / 3, z / 3);
+      n++;
+      if (n >= 200) break outer;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
+// Height above local terrain that counts as "up off the ground". Expressed as
+// a fraction of the mesh's vertical extent so it adapts to scale. NOTE: extent
+// is dominated by terrain RELIEF (hillsides), not building height, so this is
+// deliberately small — low single-storey buildings sit only a little above the
+// local ground. Tune here (or pass groundClearance to autoTag). Shared by
+// auto-tag and the explore inspector so they never disagree.
+export const GROUND_CLEARANCE_FRACTION = 0.025;
+export function defaultClearance(terrain) {
+  return terrain ? Math.max((terrain.yMax - terrain.yMin) * GROUND_CLEARANCE_FRACTION, 1e-3) : 0;
+}
+
+// The single classification decision, shared by auto-tag and the explore
+// inspector so what you see when tapping a surface is exactly what auto-tag
+// would assign. Returns the class plus the reasoning behind it.
+//   geomClass  — normal-derived surface class (roof-flat / wall / slope / …)
+//   heightAbove — mean height above local terrain (nDSM), or null if no terrain
+//   greenish   — colour says vegetation
+export function classifyRegion({ selector, labels, terrain, targetClass, selected, clearance }) {
+  let classId = labels.suggestFor({ targetClass, selected });
+  const heightAbove = terrain ? meanHeightAbove(terrain, selected) : null;
+  // Terrain-relative flat decision (see autoTag): ground vs roof by local height.
+  if (targetClass === "roof-flat" && heightAbove != null) {
+    classId = heightAbove < clearance ? "ground" : "building-roof";
+  }
+  const color = regionMeanColor(selector, selected);
+  const greenish = isGreenish(color);
+  if (classId !== "building-wall" && greenish) classId = "vegetation";
+  return { classId, geomClass: targetClass, heightAbove, clearance, greenish, color };
+}
+
 export async function autoTag({
   selector,
   labels,
@@ -47,9 +107,17 @@ export async function autoTag({
   minFaces = MIN_FACES,
   minArea = MIN_AREA,
   maxLabels = MAX_AUTO_LABELS,
+  groundClearance = null, // world units above local terrain that counts as "up off the ground"
 }) {
   selector.ensureGlobalGraph(root);
   const tiles = labels.tileMeshes;
+
+  // Bare-earth terrain so a flat surface is judged by its height above the
+  // LOCAL ground, not a single global floor (which mislabels high ground as
+  // roof). Default clearance scales with the mesh's vertical extent so it
+  // adapts to the map's unknown real-world scale; tune via the param.
+  const terrain = Terrain.build(root);
+  const clearance = groundClearance != null ? groundClearance : defaultClearance(terrain);
 
   // visited[mesh][face] — seeded from existing labels so human work is
   // never overwritten and re-runs don't duplicate confirmed surfaces.
@@ -109,14 +177,14 @@ export async function autoTag({
 
       if (faceCount < minFaces || area < minArea) continue;
 
-      let classId = labels.suggestFor({
+      const { classId } = classifyRegion({
+        selector,
+        labels,
+        terrain,
         targetClass: result.targetClass,
         selected: claimed,
+        clearance,
       });
-      // Geometric priors can't tell a palm canopy from a roof — colour can.
-      if (classId !== "building-wall" && isGreenish(regionMeanColor(selector, claimed))) {
-        classId = "vegetation";
-      }
 
       labels.add({
         selected: claimed,

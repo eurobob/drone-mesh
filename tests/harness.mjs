@@ -13,6 +13,7 @@ import { ChromeController } from "../src/app/ChromeController.js";
 import { LabelingController } from "../src/app/LabelingController.js";
 import { SelectionController } from "../src/app/SelectionController.js";
 import { ReviewController } from "../src/app/ReviewController.js";
+import { inspectMixin } from "../src/app/inspect.js";
 
 // --- jsdom globals (installed once at import) ------------------------------
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -109,7 +110,12 @@ export function makeApp({ mode = "explore", editTool = "tap" } = {}) {
       streamer: null,
       debugLOD: false,
       debugViz: false,
+      // Explore classifier inspector state (see src/app/inspect.js), mirroring
+      // main.js so controllers can call app.updateInspector() as they do live.
+      inspectMode: true,
+      terrain: null,
     },
+    inspectMixin,
   );
 
   // Chrome is a controller (owns tool/intent), not a mixin — create before the

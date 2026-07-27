@@ -179,6 +179,18 @@ export class ChromeController {
     document.getElementById("labels-menu-btn").addEventListener("click", () =>
       menu.classList.toggle("open")
     );
+
+    // Explore classifier inspector toggle: shows what auto-tag would call the
+    // tapped surface (app/inspect.js). Reflects + flips app.inspectMode.
+    const inspBtn = document.getElementById("labels-inspect");
+    if (inspBtn) {
+      inspBtn.classList.toggle("on", this.app.inspectMode);
+      inspBtn.addEventListener("click", () => {
+        this.app.inspectMode = !this.app.inspectMode;
+        inspBtn.classList.toggle("on", this.app.inspectMode);
+        this.app.updateInspector();
+      });
+    }
   }
 
   syncModeToggle() {
